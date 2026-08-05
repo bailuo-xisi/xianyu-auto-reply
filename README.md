@@ -196,6 +196,42 @@ bash deploy.sh
 bash update.sh
 ```
 
+### GitHub Actions 自动发布
+
+仓库新增 `.github/workflows/deploy.yml`。向 `main` 分支 push 后，Actions 会执行以下流程：
+
+1. 校验 Python 模块并构建前端。
+2. 并行构建 4 个 amd64 Docker 镜像，并推送不可变的 commit SHA tag。
+3. 通过 SSH 将部署脚本发送到服务器。
+4. 服务器先拉取新镜像，保持当前容器继续运行，再按 `backend-web`、`websocket`、`scheduler`、`frontend` 顺序逐个切换并等待健康检查。
+
+部署过程不会执行 `docker compose down`，也不会停止 MySQL / Redis；失败时会尝试恢复本次更新前的应用镜像。
+
+首次使用前，在 GitHub 仓库的 **Settings -> Secrets and variables -> Actions** 中配置：
+
+| 类型 | 名称 | 说明 |
+|------|------|------|
+| Secret | `REGISTRY_USERNAME` | 阿里云 ACR 用户名 |
+| Secret | `REGISTRY_PASSWORD` | 阿里云 ACR 密码 |
+| Secret | `DEPLOY_HOST` | 服务器地址 |
+| Secret | `DEPLOY_USER` | SSH 用户名 |
+| Secret | `DEPLOY_SSH_KEY` | SSH 私钥 |
+| Secret | `DEPLOY_KNOWN_HOSTS` | 可选，服务器 SSH host key |
+| Variable | `IMAGE_REGISTRY` | 可选，默认 `registry.cn-shanghai.aliyuncs.com` |
+| Variable | `IMAGE_NAMESPACE` | 可选，默认 `zhinian-software` |
+| Variable | `DEPLOY_PATH` | 可选，默认 `/opt/xianyu-auto-reply` |
+| Variable | `DEPLOY_PORT` | 可选，默认 `22` |
+
+服务器需先完成一次基础部署，并保证部署用户可以执行 Docker：
+
+```bash
+git clone https://github.com/bailuo-xisi/xianyu-auto-reply.git /opt/xianyu-auto-reply
+cd /opt/xianyu-auto-reply
+bash deploy.sh
+```
+
+当前 Compose 编排是单副本架构，因此 Actions 可以保证不会整体停服，且拉取镜像阶段完全不中断；切换某个单实例容器时仍存在该服务自身的重建窗口。若需要严格意义上的零秒切换，需要进一步改造成多副本加反向代理或 Docker Swarm/Kubernetes。
+
 ### 方式三：使用远程 MySQL / Redis 部署
 
 当 MySQL 和 Redis 由外部（如云数据库 RDS、独立服务器或已有实例）提供时，可使用 `deploy_remote.sh`。

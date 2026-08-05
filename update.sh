@@ -546,12 +546,63 @@ pull_latest_images() {
     echo ""
 }
 
-# 重建应用容器
+# Make sure the data services exist without recreating running containers.
+ensure_infrastructure() {
+    echo -e "${YELLOW}[信息] 确保 MySQL / Redis 正常运行...${NC}"
+    "${DC_CMD[@]}" up -d --no-recreate mysql redis
+    echo ""
+}
+
+# Wait for a recreated container before moving to the next service.
+wait_for_service() {
+    local service="$1"
+    local container
+    local deadline=$((SECONDS + 300))
+
+    container="$("${DC_CMD[@]}" ps -q "$service" 2>/dev/null | tail -n 1 || true)"
+    if [ -z "$container" ]; then
+        echo -e "${RED}[错误] 未找到服务容器: ${service}${NC}"
+        return 1
+    fi
+
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        local state health
+        state="$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null || true)"
+        health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)"
+
+        if [ "$health" = "healthy" ]; then
+            echo -e "${GREEN}✓ ${service} 健康检查通过${NC}"
+            return 0
+        fi
+
+        if [ "$health" = "unhealthy" ] || [ "$state" = "exited" ] || [ "$state" = "dead" ]; then
+            docker logs --tail 80 "$container" 2>/dev/null || true
+            echo -e "${RED}[错误] ${service} 启动失败${NC}"
+            return 1
+        fi
+
+        # Keep compatibility with images that do not publish a healthcheck.
+        if [ "$health" = "none" ] && [ "$state" = "running" ]; then
+            sleep 10
+            return 0
+        fi
+        sleep 2
+    done
+
+    docker logs --tail 80 "$container" 2>/dev/null || true
+    echo -e "${RED}[错误] ${service} 健康检查超时${NC}"
+    return 1
+}
+
+# Recreate one application container at a time. The old stack is never taken down.
 recreate_app_services() {
-    echo -e "${YELLOW}[信息] 使用最新镜像重建应用容器...${NC}"
-    "${DC_CMD[@]}" up -d "${APP_SERVICES[@]}"
-    echo -e "${YELLOW}[信息] 等待服务启动...${NC}"
-    sleep 15
+    echo -e "${YELLOW}[信息] 按服务逐个切换应用容器，不执行 docker compose down...${NC}"
+    local service
+    for service in "backend-web" "websocket" "scheduler" "frontend"; do
+        echo -e "${CYAN}[信息] 更新服务: ${service}${NC}"
+        "${DC_CMD[@]}" up -d --no-deps --force-recreate "$service"
+        wait_for_service "$service"
+    done
     "${DC_CMD[@]}" ps
     echo ""
 }
@@ -617,6 +668,7 @@ run_update() {
     check_deploy_files
     create_mount_dirs
     cleanup_enc_version
+    ensure_infrastructure
     resolve_app_image_refs
     record_old_app_image_ids
     pull_latest_images
