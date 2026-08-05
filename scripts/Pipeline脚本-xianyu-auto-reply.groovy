@@ -3,7 +3,7 @@
     
     environment {
         // GitHub 仓库配置（通过国内 GitHub 加速镜像拉取，公开仓库无需凭据）
-        GITHUB_REPO = 'https://github.com/zhinianboke/xianyu-auto-reply.git'
+        GITHUB_REPO = 'https://github.com/bailuo-xisi/xianyu-auto-reply.git'
         // 注：已改为多加速镜像拉取（ghfast.top 等），不再使用 github-token 凭据；
         //     若仓库为私有需走凭据，请改回 git 步骤并配置 GITHUB_CREDENTIALS
         GITHUB_CREDENTIALS = 'github-token'

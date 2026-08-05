@@ -426,7 +426,7 @@ export function About() {
         <div className="vben-card-body">
           <div className="flex gap-3">
             <a
-              href="https://github.com/zhinianboke/xianyu-auto-reply"
+              href="https://github.com/bailuo-xisi/xianyu-auto-reply"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-900 text-white hover:bg-gray-800 transition-colors text-sm"
