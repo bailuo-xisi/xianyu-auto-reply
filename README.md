@@ -163,7 +163,7 @@ xianyu-auto-reply/
 服务器已安装 Docker 与 Docker Compose 后，直接执行一键部署脚本即可：
 
 ```bash
-curl -fsSL https://xy-update.zhinianboke.com/deploy.sh | sed 's/\r$//' | bash
+curl -fsSL https://raw.githubusercontent.com/bailuo-xisi/xianyu-auto-reply/main/deploy.sh | sed 's/\r$//' | bash
 ```
 
 该脚本会自动完成部署所需的配置生成、镜像拉取、旧容器清理与服务启动。
@@ -171,7 +171,7 @@ curl -fsSL https://xy-update.zhinianboke.com/deploy.sh | sed 's/\r$//' | bash
 更新版本，直接执行一键更新脚本即可：
 
 ```bash
-curl -fsSL https://xy-update.zhinianboke.com/update.sh | sed 's/\r$//' | bash
+curl -fsSL https://raw.githubusercontent.com/bailuo-xisi/xianyu-auto-reply/main/update.sh | sed 's/\r$//' | bash
 ```
 
 ### 方式二：克隆仓库部署
@@ -240,14 +240,14 @@ bash deploy.sh
 
 ```bash
 # 1) 首次运行：自动生成 .env.remote 后退出，提示填写远程连接信息
-curl -fsSL https://xy-update.zhinianboke.com/deploy_remote.sh | sed 's/\r$//' | bash
+curl -fsSL https://raw.githubusercontent.com/bailuo-xisi/xianyu-auto-reply/main/deploy_remote.sh | sed 's/\r$//' | bash
 
 # 2) 编辑 .env.remote，填写真实的远程地址（勿填 localhost）
 #    MYSQL_HOST / REDIS_HOST 等
 vim .env.remote
 
 # 3) 再次运行：校验配置 → 自动生成 docker-compose.remote.yml → 拉取镜像 → 启动
-curl -fsSL https://xy-update.zhinianboke.com/deploy_remote.sh | sed 's/\r$//' | bash
+curl -fsSL https://raw.githubusercontent.com/bailuo-xisi/xianyu-auto-reply/main/deploy_remote.sh | sed 's/\r$//' | bash
 ```
 
 > 已克隆仓库的也可改用本地脚本：`bash deploy_remote.sh`（首次生成配置后退出，填好 `.env.remote` 再次执行）。
@@ -474,7 +474,7 @@ sed -i 's/\r$//' deploy.sh
 bash deploy.sh
 
 # 方法二：通过管道执行（推荐远程脚本使用）
-curl -fsSL https://xy-update.zhinianboke.com/deploy.sh | sed 's/\r$//' | bash
+curl -fsSL https://raw.githubusercontent.com/bailuo-xisi/xianyu-auto-reply/main/deploy.sh | sed 's/\r$//' | bash
 ```
 
 ## 许可证
