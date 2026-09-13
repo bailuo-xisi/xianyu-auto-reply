@@ -97,6 +97,8 @@ class OrderService:
         owner_id: int | None,
         *,
         account_id: str | None = None,
+        item_ids: list[str] | None = None,
+        order_no: str | None = None,
         status: str | None = None,
         search: str | None = None,
         delivery_method: str | None = None,
@@ -113,6 +115,8 @@ class OrderService:
         Args:
             owner_id: 用户ID，None表示查询所有用户（管理员）
             account_id: 账号ID筛选
+            item_ids: 商品ID筛选
+            order_no: 订单号精确筛选
             status: 订单状态筛选
             search: 搜索关键词（匹配订单号、商品ID、买家ID）
             delivery_method: 发货方式筛选（manual/auto/scheduled）
@@ -137,6 +141,10 @@ class OrderService:
             conditions.append(XYOrder.owner_id == owner_id)
         if account_id:
             conditions.append(XYOrder.account_id == account_id)
+        if item_ids:
+            conditions.append(XYOrder.item_id.in_(item_ids))
+        if order_no:
+            conditions.append(XYOrder.order_no == order_no)
         if status:
             conditions.append(XYOrder.status == status)
         
@@ -308,6 +316,51 @@ class OrderService:
             return row or ""
         except Exception as e:
             logger.warning(f"获取商品标题失败: {e}")
+            return ""
+
+    async def resolve_item_title(self, owner_id: int | None, item_id: str) -> str:
+        """解析商品标题（多来源兜底，供买家侧页面展示使用）
+
+        取值顺序：
+        1. 商品表 xy_items.title —— 商家在「商品管理」同步过商品时最权威
+        2. 自动回复日志 xy_auto_reply_message_log.item_title —— 商品表未同步该商品时，
+           用消息侧曾记录过的商品标题兜底（取该商品最近一条有标题的日志）
+
+        两处都取不到时返回空字符串，由调用方决定退化展示（不编造标题）。
+
+        Args:
+            owner_id: 所属用户ID，None 表示不限制用户（管理员场景）
+            item_id: 商品ID
+        Returns:
+            商品标题；取不到返回空字符串
+        """
+        if not item_id:
+            return ""
+
+        # 来源一：商品表（复用已有单商品标题查询，内部已含 owner 隔离与异常兜底）
+        if owner_id is not None:
+            title = await self.get_item_title(owner_id, item_id)
+            if title:
+                return title
+
+        # 来源二：自动回复日志中记录过的商品标题，取该商品最近一条
+        try:
+            stmt = (
+                select(XYAutoReplyMessageLog.item_title)
+                .where(
+                    XYAutoReplyMessageLog.item_id == item_id,
+                    XYAutoReplyMessageLog.item_title.isnot(None),
+                    XYAutoReplyMessageLog.item_title != "",
+                )
+                .order_by(XYAutoReplyMessageLog.id.desc())
+                .limit(1)
+            )
+            if owner_id is not None:
+                stmt = stmt.where(XYAutoReplyMessageLog.owner_id == owner_id)
+            result = await self.session.execute(stmt)
+            return result.scalar() or ""
+        except Exception as e:
+            logger.warning(f"从自动回复日志获取商品标题失败: item_id={item_id}, {e}")
             return ""
 
     async def get_order_by_no(self, order_no: str) -> Optional[XYOrder]:
@@ -497,6 +550,44 @@ class OrderService:
             return result.rowcount > 0
         except Exception as e:
             logger.error(f"记录已关闭订单的卡券补发信息失败: {e}")
+            await self.session.rollback()
+            return False
+
+    async def record_card_only_delivery(
+        self,
+        order_no: str,
+        delivery_method: str,
+        delivery_content: str | None = None,
+        buyer_fish_nick: str | None = None,
+    ) -> bool:
+        """记录账号级“只发卡券”已处理结果，不伪造闲鱼平台订单状态。
+
+        卡券内容在调用本方法前可能已经从库存/API 中取出，因此即使消息发送失败也要
+        持久化防重标记和内容，避免定时任务再次消费一张新卡券。失败原因由调用方随后写入。
+        """
+        try:
+            if delivery_content and len(delivery_content) > 2000:
+                delivery_content = delivery_content[:1997] + "..."
+
+            values = {
+                "card_only_delivered": True,
+                "delivery_method": delivery_method,
+                "delivery_content": delivery_content,
+                "delivery_fail_reason": None,
+            }
+            if buyer_fish_nick:
+                values["buyer_fish_nick"] = buyer_fish_nick
+
+            stmt = (
+                update(XYOrder)
+                .where(XYOrder.order_no == order_no)
+                .values(**values)
+            )
+            result = await self.session.execute(stmt)
+            await self.session.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            logger.error(f"记录只发卡券结果失败: {e}")
             await self.session.rollback()
             return False
 

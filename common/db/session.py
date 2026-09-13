@@ -72,32 +72,97 @@ def _compile_sql_with_params(statement, parameters):
     """
     try:
         sql_str = str(statement)
+
+        # SQL 回显用于排查问题，但不能把系统密钥写入日志。系统设置表中的
+        # 敏感键可能通过 ORM 参数绑定出现，先识别键再仅脱敏对应值。
+        sensitive_setting_keys = {
+            "security.internal_api_token",
+            "security.jwt_secret_key",
+            "admin_password_hash",
+            "password_login.remote_secret_key",
+            "token.remote_secret_key",
+        }
+
+        def _is_sensitive_key(value) -> bool:
+            return (
+                isinstance(value, str)
+                and value.strip().lower() in sensitive_setting_keys
+            )
+
+        def _contains_sensitive_key(value) -> bool:
+            if isinstance(value, dict):
+                return any(_contains_sensitive_key(item) for item in value.values())
+            if isinstance(value, (list, tuple)):
+                return any(_contains_sensitive_key(item) for item in value)
+            return _is_sensitive_key(value)
+
+        # SQLAlchemy 可能传入命名参数、扁平位置参数或 executemany 的参数列表。
+        # 统一成若干组，避免只处理某一种驱动的参数形态。
+        parameter_groups: list[dict | list | tuple] = []
+        if isinstance(parameters, dict):
+            parameter_groups = [parameters]
+        elif isinstance(parameters, (list, tuple)):
+            if any(isinstance(item, (dict, list, tuple)) for item in parameters):
+                parameter_groups = list(parameters)
+            else:
+                parameter_groups = [parameters]
+
+        lowered_sql = sql_str.lower()
+        query_targets_settings = "xy_system_settings" in lowered_sql
+        sensitive_query = query_targets_settings and (
+            any(_contains_sensitive_key(group) for group in parameter_groups)
+            or any(
+                f"'{key}'" in lowered_sql or f'"{key}"' in lowered_sql
+                for key in sensitive_setting_keys
+            )
+        )
+
+        def _format_value(value, parameter_name: str | None = None):
+            # 查询系统敏感设置时保留 setting key 便于定位，其他绑定值全部脱敏。
+            if (
+                sensitive_query
+                and parameter_name not in {"key", "setting_key"}
+                and not _is_sensitive_key(value)
+            ):
+                value = "***REDACTED***"
+            if isinstance(value, str):
+                return f"'{value}'"
+            if value is None:
+                return "NULL"
+            if isinstance(value, bool):
+                return "1" if value else "0"
+            if isinstance(value, bytes):
+                return f"X'{value.hex()}'"
+            return str(value)
         
-        if parameters:
-            if isinstance(parameters, dict):
-                # 字典参数
-                for key, value in parameters.items():
-                    if isinstance(value, str):
-                        value = f"'{value}'"
-                    elif value is None:
-                        value = "NULL"
-                    elif isinstance(value, bool):
-                        value = "1" if value else "0"
-                    elif isinstance(value, bytes):
-                        value = f"X'{value.hex()}'"
-                    sql_str = sql_str.replace(f":{key}", str(value))
-            elif isinstance(parameters, (list, tuple)):
-                # 位置参数
-                for param in parameters:
-                    if isinstance(param, dict):
-                        for key, value in param.items():
-                            if isinstance(value, str):
-                                value = f"'{value}'"
-                            elif value is None:
-                                value = "NULL"
-                            elif isinstance(value, bool):
-                                value = "1" if value else "0"
-                            sql_str = sql_str.replace(f":{key}", str(value), 1)
+        def _replace_named(sql: str, key: str, value) -> str:
+            formatted = _format_value(value, key)
+            # 支持 SQLAlchemy 文本 SQL 和 MySQL pyformat 两种命名占位符。
+            sql = sql.replace(f":{key}", formatted, 1)
+            return sql.replace(f"%({key})s", formatted, 1)
+
+        def _replace_positional(sql: str, values) -> str:
+            for value in values:
+                formatted = _format_value(value)
+                question_index = sql.find("?")
+                format_index = sql.find("%s")
+                indexes = [index for index in (question_index, format_index) if index >= 0]
+                if not indexes:
+                    break
+                index = min(indexes)
+                token_length = 1 if sql[index] == "?" else 2
+                sql = sql[:index] + formatted + sql[index + token_length:]
+            return sql
+
+        for group in parameter_groups:
+            if isinstance(group, dict):
+                for key, value in group.items():
+                    sql_str = _replace_named(sql_str, str(key), value)
+            elif isinstance(group, (list, tuple)):
+                sql_str = _replace_positional(sql_str, group)
+            # executemany 的参数组只需渲染第一组；占位符已耗尽时后续组不会污染日志。
+            if sql_str.find("?") < 0 and sql_str.find("%s") < 0 and len(parameter_groups) > 1:
+                break
         
         return sql_str
     except Exception:

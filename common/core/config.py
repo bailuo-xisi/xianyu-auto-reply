@@ -74,6 +74,9 @@ class BaseConfig(BaseSettings):
     access_token_expire_minutes: int = Field(default=30)
     refresh_token_expire_minutes: int = Field(default=60 * 24 * 7)
 
+    # 服务间调用 /internal 接口使用的共享令牌；留空时由启动流程从数据库自动加载或生成。
+    internal_api_token: str = Field(default="", alias="INTERNAL_API_TOKEN", repr=False)
+
     # 服务监听地址：`::` 同时监听 IPv4 和 IPv6（dual-stack），
     # 适用于 Linux/macOS；如需仅监听 IPv4 可设为 0.0.0.0
     host: str = Field(default="::")

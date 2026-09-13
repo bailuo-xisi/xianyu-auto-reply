@@ -15,7 +15,7 @@ import os
 import sys
 import aiohttp
 from collections import defaultdict
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from loguru import logger
 
 from common.utils.xianyu_utils import (
@@ -32,6 +32,9 @@ HEARTBEAT_INTERVAL = int(os.getenv('HEARTBEAT_INTERVAL', '15'))
 HEARTBEAT_TIMEOUT = int(os.getenv('HEARTBEAT_TIMEOUT', '30'))
 TOKEN_REFRESH_INTERVAL = int(os.getenv('TOKEN_REFRESH_INTERVAL', '72000'))
 TOKEN_RETRY_INTERVAL = int(os.getenv('TOKEN_RETRY_INTERVAL', '7200'))
+
+# 自动发货被账号开关拦截时写入订单的说明，便于在订单管理中定位原因。
+AUTO_CONFIRM_DISABLED_REASON = "自动确认发货开关未开启，未执行自动发货，请手动发货"
 
 DEFAULT_HEADERS = {
     'accept': 'application/json',
@@ -806,14 +809,37 @@ class XianyuAsync:
                                                     )
                                                     return
 
-                                                # 小刀订单 + allow：先免拼再走自动发货流程（参照_handle_card_message的处理）
-                                                # card_only 时订单已被关闭，调免拼无意义
-                                                if order_info.get('is_bargain') and order_buyer_id and pre_action == 'allow':
+                                                # 小刀订单仅在正常确认发货模式调用免拼接口。
+                                                # 同意后发货模式同样跳过免拼（不确认发货、只发提货信息）。
+                                                only_send_card_mode = self.is_only_send_card_enabled()
+                                                agree_deliver_mode = self.is_agree_deliver_enabled()
+                                                if (
+                                                    order_info.get('is_bargain')
+                                                    and order_buyer_id
+                                                    and pre_action == 'allow'
+                                                    and not only_send_card_mode
+                                                    and not agree_deliver_mode
+                                                ):
+                                                    amount_ok = await self.auto_delivery_handler._ensure_order_amount_before_delivery(
+                                                        order_id=order_no,
+                                                        item_id=order_item_id,
+                                                        buyer_id=order_buyer_id,
+                                                    )
+                                                    if not amount_ok:
+                                                        fail_reason = "订单金额为0，发货前刷新订单详情失败，请稍后重试"
+                                                        logger.warning(
+                                                            f"【{self.cookie_id}】重发货触发：订单 {order_no} {fail_reason}"
+                                                        )
+                                                        await self.auto_delivery_handler._update_delivery_fail_reason(
+                                                            order_no, fail_reason
+                                                        )
+                                                        return
                                                     logger.info(f"【{self.cookie_id}】重发货触发: 检测到小刀订单，先调用免拼接口: order_id={order_no}, buyer_id={order_buyer_id}")
                                                     freeshipping_result = await self.auto_delivery_handler.auto_freeshipping(
                                                         order_no, order_item_id, order_buyer_id
                                                     )
                                                     if freeshipping_result and freeshipping_result.get('success'):
+                                                        pre_check['platform_shipping_confirmed'] = True
                                                         success_msg = freeshipping_result.get('message', '')
                                                         if 'ORDER_ALREADY_DELIVERY' in success_msg or '已发货成功' in success_msg:
                                                             logger.info(f"【{self.cookie_id}】重发货触发: 订单 {order_no} 已发货过，只更新数据库状态")
@@ -831,10 +857,12 @@ class XianyuAsync:
                                                     else:
                                                         error_msg = freeshipping_result.get('error', '未知错误') if freeshipping_result else '未知错误'
                                                         logger.warning(f"【{self.cookie_id}】重发货触发: 免拼发货失败: {error_msg}，继续尝试自动发货")
-                                                elif order_info.get('is_bargain') and pre_action == 'card_only':
+                                                elif order_info.get('is_bargain') and (
+                                                    pre_action == 'card_only' or only_send_card_mode
+                                                ):
                                                     logger.info(
-                                                        f"【{self.cookie_id}】重发货触发：小刀订单 + card_only 模式，"
-                                                        f"订单 {order_no} 已被关闭，跳过免拼接口，直接进入卡券补发流程"
+                                                        f"【{self.cookie_id}】重发货触发：小刀订单仅发卡券，"
+                                                        f"跳过免拼接口，直接进入卡券发送流程: order_id={order_no}"
                                                     )
 
                                                 await self.auto_delivery_handler._handle_auto_delivery(
@@ -879,12 +907,15 @@ class XianyuAsync:
                     # 检查是否是自动发货触发消息（参照旧框架）
                     if auto_reply_service.is_auto_delivery_trigger(send_message):
                         # 检查是否启用自动确认发货
-                        if self.is_auto_confirm_enabled():
+                        if self.is_auto_confirm_enabled() or self.is_only_send_card_enabled():
                             logger.info(f"【{self.cookie_id}】✅ 触发自动发货流程: {send_message}")
                             # 调用自动发货处理
                             await self._handle_auto_delivery_from_message(parsed_message, ws)
                         else:
                             logger.info(f"【{self.cookie_id}】⚠️ 自动确认发货已关闭，跳过自动发货")
+                            await self._record_auto_confirm_disabled_reason(
+                                self._extract_order_id(raw_message)
+                            )
                         # 自动发货消息不进行自动回复，但仍然发送通知
                         # auto_reply_service.handle_chat_message 中已经处理了通知发送
                         return
@@ -923,11 +954,14 @@ class XianyuAsync:
                     
                     # 检查是否是自动发货触发消息
                     if auto_reply_service.is_auto_delivery_trigger(send_message):
-                        if self.is_auto_confirm_enabled():
+                        if self.is_auto_confirm_enabled() or self.is_only_send_card_enabled():
                             logger.info(f"【{self.cookie_id}】✅ 卡片更新消息触发自动发货流程: {send_message}")
                             await self._handle_auto_delivery_from_message(parsed_message, ws)
                         else:
                             logger.info(f"【{self.cookie_id}】⚠️ 自动确认发货已关闭，跳过自动发货")
+                            await self._record_auto_confirm_disabled_reason(
+                                self._extract_order_id(raw_message)
+                            )
                     else:
                         # 非发货触发的卡片更新消息（如"买家已拍下，待付款"等），交给auto_reply_service处理自动回复
                         logger.info(f"【{self.cookie_id}】卡片更新消息触发自动回复: {send_message}")
@@ -1068,6 +1102,25 @@ class XianyuAsync:
         except Exception as e:
             logger.error(f"【{self.cookie_id}】获取自动确认设置失败: {e}")
             return False
+
+    async def _record_auto_confirm_disabled_reason(self, order_id: str) -> None:
+        """记录自动确认发货开关关闭导致的跳过原因。
+
+        Args:
+            order_id: 闲鱼订单号。
+        """
+        if not order_id:
+            logger.warning(f"【{self.cookie_id}】自动发货被开关拦截，但未提取到订单号，无法记录订单原因")
+            return
+
+        if not getattr(self, "auto_delivery_handler", None):
+            logger.warning(f"【{self.cookie_id}】自动发货处理器未初始化，无法记录订单 {order_id} 的失败原因")
+            return
+
+        await self.auto_delivery_handler._update_delivery_fail_reason(
+            order_id,
+            AUTO_CONFIRM_DISABLED_REASON,
+        )
     
     def is_confirm_before_send_enabled(self) -> bool:
         """检查是否开启发货成功再发卡券开关"""
@@ -1086,6 +1139,36 @@ class XianyuAsync:
         except Exception as e:
             logger.error(f"【{self.cookie_id}】获取卡券发送成功再确认发货设置失败: {e}")
             return False
+
+    def is_only_send_card_enabled(self) -> bool:
+        """检查是否开启只发卡券、不确认发货开关"""
+        try:
+            from common.db.compat import db_manager
+            return db_manager.get_only_send_card(self.cookie_id)
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】获取只发卡券设置失败: {e}")
+            return False
+
+    def get_agree_deliver_config(self) -> dict:
+        """获取同意后发货配置（开关/通知信息/提货URL）
+
+        Returns:
+            {"enabled": bool, "notify_message": str|None, "pickup_url": str|None}；
+            异常时返回 enabled=False 的空配置
+        """
+        try:
+            from common.db.compat import db_manager
+            return db_manager.get_agree_deliver_config(self.cookie_id)
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】获取同意后发货配置失败: {e}")
+            return {"enabled": False, "notify_message": None, "pickup_url": None}
+
+    def is_agree_deliver_enabled(self) -> bool:
+        """检查是否开启同意后发货开关（守卫用，仅判开关）"""
+        try:
+            return bool(self.get_agree_deliver_config().get("enabled"))
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】获取同意后发货开关失败: {e}")
             return False
     
     def _extract_order_id(self, message: dict) -> str:
@@ -1170,6 +1253,8 @@ class XianyuAsync:
                 '[买家已付款]',
                 '[付款完成]',
                 '[已付款，待发货]',
+                # 上门自提订单的付款提醒，同样需要建单并拉取订单详情
+                '[我已付款，请添加自提信息]',
             ]
             
             if send_message not in fetch_detail_messages:
@@ -1431,8 +1516,10 @@ class XianyuAsync:
                     except Exception as e:
                         logger.error(f"【{self.cookie_id}】更新订单小刀状态失败: {e}")
                 
-                # 检查是否启用自动确认发货
-                if self.is_auto_confirm_enabled():
+                # 自动确认、“只发卡券”或“同意后发货”任一开启时，均允许进入发货流程
+                only_send_card_mode = self.is_only_send_card_enabled()
+                agree_deliver_mode = self.is_agree_deliver_enabled()
+                if self.is_auto_confirm_enabled() or only_send_card_mode or agree_deliver_mode:
                     if order_id:
                         await asyncio.sleep(2)
                         # 调用auto_delivery_handler的免拼发货方法
@@ -1475,14 +1562,29 @@ class XianyuAsync:
                                 logger.info(f"【{self.cookie_id}】小刀卡片：禁止发货命中，订单 {order_id} 拦截结束")
                                 return
 
-                            # 仅 allow 时才调用免拼接口；card_only 时订单已被关闭，调免拼无意义
-                            if pre_action == 'allow':
+                            # 仅正常确认发货模式调用免拼；只发卡券/同意后发货场景都跳过平台发货接口
+                            if pre_action == 'allow' and not only_send_card_mode and not agree_deliver_mode:
+                                amount_ok = await self.auto_delivery_handler._ensure_order_amount_before_delivery(
+                                    order_id=order_id,
+                                    item_id=item_id,
+                                    buyer_id=send_user_id,
+                                )
+                                if not amount_ok:
+                                    fail_reason = "订单金额为0，发货前刷新订单详情失败，请稍后重试"
+                                    logger.warning(
+                                        f"【{self.cookie_id}】小刀卡片：订单 {order_id} {fail_reason}"
+                                    )
+                                    await self.auto_delivery_handler._update_delivery_fail_reason(
+                                        order_id, fail_reason
+                                    )
+                                    return
                                 freeshipping_result = await self.auto_delivery_handler.auto_freeshipping(
                                     order_id, item_id, send_user_id
                                 )
 
                                 # 检查是否是"已发货成功"的响应
                                 if freeshipping_result and freeshipping_result.get('success'):
+                                    pre_check['platform_shipping_confirmed'] = True
                                     success_msg = freeshipping_result.get('message', '')
                                     if 'ORDER_ALREADY_DELIVERY' in success_msg or '已发货成功' in success_msg:
                                         logger.info(f"【{self.cookie_id}】订单 {order_id} 已发货过，只更新数据库状态")
@@ -1503,8 +1605,8 @@ class XianyuAsync:
                                         return
                             else:
                                 logger.info(
-                                    f"【{self.cookie_id}】小刀卡片：card_only 模式，订单 {order_id} 已被关闭，"
-                                    f"跳过免拼接口，直接进入卡券补发流程"
+                                    f"【{self.cookie_id}】小刀卡片：仅发卡券模式，跳过免拼接口，"
+                                    f"直接进入卡券发送流程: order_id={order_id}"
                                 )
 
                             # 继续正常的自动发货流程，复用 pre_check 结果
@@ -1515,6 +1617,9 @@ class XianyuAsync:
                             )
                         else:
                             logger.warning(f"【{self.cookie_id}】auto_delivery_handler未初始化，跳过小刀处理")
+                else:
+                    logger.info(f"【{self.cookie_id}】⚠️ 自动确认发货和只发卡券均已关闭，跳过小刀订单自动发货")
+                    await self._record_auto_confirm_disabled_reason(order_id)
             else:
                 logger.debug(f"【{self.cookie_id}】收到卡片消息: {card_title}")
                 
@@ -1985,16 +2090,79 @@ class XianyuAsync:
         Raises:
             ConnectionError: WebSocket 未连接
             TimeoutError: 等待响应超时
-            ValueError: 响应中未找到 cid
+            ValueError: 响应中未找到 cid（含闲鱼返回 code:400 无 body 的场景，
+                        会先尝试「刷新 token + 断线重连」后重试一次，仍失败才抛出）
         """
-        ws = self.connection_manager.ws
-        if ws is None:
+        if self.connection_manager.ws is None:
             raise ConnectionError(f"【{self.cookie_id}】WebSocket 未连接，无法创建会话")
 
         if not to_user_id:
             raise ValueError("to_user_id 不能为空")
         if not item_id:
             raise ValueError("item_id 不能为空")
+
+        # 首次发送
+        chat_id, response = await self._send_create_chat_once(to_user_id, item_id, timeout)
+        if chat_id:
+            logger.info(
+                f"【{self.cookie_id}】创建会话成功: to_user_id={to_user_id}, "
+                f"item_id={item_id}, chat_id={chat_id}"
+            )
+            return chat_id
+
+        # 取不到 cid（闲鱼常返回 {"headers":{...}, "code": 400} 无 body）：
+        # 该情形可能是连接所用 token 已失效，尝试「刷新 token（成功才重连）→ 强制重连（重连 /reg 用新 token）→ 重试一次」
+        resp_code = response.get("code") if isinstance(response, dict) else None
+        logger.warning(
+            f"【{self.cookie_id}】创建会话未获取到 cid（闲鱼返回 code={resp_code}），"
+            f"尝试刷新 token 并断线重连后重试: to_user_id={to_user_id}, item_id={item_id}"
+        )
+        if await self._reconnect_with_new_token():
+            # 该路径整体较慢：首发(≤15s)+刷新 token+重连就绪(≤50s)+重试(≤8s)。
+            # 刷新失败时会快速返回 False（不重连）；刷新成功时重连通常很快、不会跑满 50s。
+            # 调用方（backend-web / scheduler）访问本接口的 create-chat 请求已单独放宽为
+            # 超时 90s + 不自动重试，避免超时触发重复 create-chat 与重连叠加。
+            retry_timeout = min(timeout, 8.0)
+            chat_id, response = await self._send_create_chat_once(to_user_id, item_id, retry_timeout)
+            if chat_id:
+                logger.info(
+                    f"【{self.cookie_id}】刷新 token 重连后创建会话成功: "
+                    f"to_user_id={to_user_id}, item_id={item_id}, chat_id={chat_id}"
+                )
+                return chat_id
+            retry_code = response.get("code") if isinstance(response, dict) else None
+            logger.error(
+                f"【{self.cookie_id}】刷新 token 重连后仍未获取到 cid（闲鱼返回 code={retry_code}）: "
+                f"to_user_id={to_user_id}, item_id={item_id}"
+            )
+        else:
+            logger.error(
+                f"【{self.cookie_id}】刷新 token 断线重连未成功，放弃重试创建会话: "
+                f"to_user_id={to_user_id}, item_id={item_id}"
+            )
+        raise ValueError("创建会话失败：刷新token重连后仍未获取到会话ID")
+
+    async def _send_create_chat_once(
+        self, to_user_id: str, item_id: str, timeout: float
+    ) -> Tuple[Optional[str], dict]:
+        """发送一次「创建会话」LWP 请求并等待响应，解析出 cid。
+
+        每次调用都重新读取当前 self.connection_manager.ws（断线重连后为新的 ws 对象）。
+
+        Args:
+            to_user_id: 对方用户ID（买家ID，不带 @goofish 后缀）
+            item_id: 关联商品ID
+            timeout: 等待响应超时时间（秒）
+        Returns:
+            (chat_id 或 None, 原始响应字典)。取不到 cid 时 chat_id 为 None，
+            响应字典用于上层读取闲鱼返回的 code 做日志/决策。
+        Raises:
+            ConnectionError: 当前无可用 WebSocket 连接
+            TimeoutError: 等待响应超时
+        """
+        ws = self.connection_manager.ws
+        if ws is None:
+            raise ConnectionError(f"【{self.cookie_id}】WebSocket 未连接，无法创建会话")
 
         mid = generate_mid()
         msg = {
@@ -2039,19 +2207,15 @@ class XianyuAsync:
             chat_id = self._extract_cid_from_create_chat_response(response)
             if not chat_id:
                 # cid 解析失败时，同时打印请求体与响应体，定位是请求参数问题还是响应结构变化
+                resp_code = response.get("code") if isinstance(response, dict) else None
                 logger.error(
-                    f"【{self.cookie_id}】创建会话响应中未找到 cid: "
+                    f"【{self.cookie_id}】创建会话响应中未找到 cid（闲鱼返回 code={resp_code}）: "
                     f"to_user_id={to_user_id}, item_id={item_id}, mid={mid}, "
                     f"请求体={json.dumps(msg, ensure_ascii=False)}, "
                     f"响应体={json.dumps(response, ensure_ascii=False, default=str)}"
                 )
-                raise ValueError("响应中未找到 cid")
-
-            logger.info(
-                f"【{self.cookie_id}】创建会话成功: to_user_id={to_user_id}, "
-                f"item_id={item_id}, chat_id={chat_id}"
-            )
-            return chat_id
+                return None, response if isinstance(response, dict) else {}
+            return chat_id, response if isinstance(response, dict) else {}
         except asyncio.TimeoutError:
             # 超时清理 pending
             self._pending_mid_futures.pop(mid, None)
@@ -2064,6 +2228,84 @@ class XianyuAsync:
             # 其他异常也要清理
             self._pending_mid_futures.pop(mid, None)
             raise
+
+    async def _reconnect_with_new_token(self, timeout: float = 50.0) -> bool:
+        """先刷新 token，成功拿到新 token 后才强制断线重连，等待新连接就绪。
+
+        token 只在建连的 /reg 头里使用一次，因此让新 token 生效必须带着它重新注册——
+        即强制重连。做法：清掉缓存 token 与内存 token → 主动刷新一次 token：
+        - 刷新失败（滑块/风控/网络等，拿不到新 token）：不关闭现有连接，直接返回 False，
+          保住当前连接的实时消息接收，本次发货失败留给下轮重试，避免风控期白白断连。
+        - 刷新成功：关闭当前 ws，主连接循环自动重连；重连的 init() 见 current_token
+          已就绪（本方法已刷新）不再重复刷新，直接带「新」token 重新 /reg。
+
+        Args:
+            timeout: 等待重连就绪的最长时间（秒）
+        Returns:
+            刷新成功且重连就绪返回 True；无连接可关 / 刷新失败 / 超时未就绪返回 False
+            （由调用方决定是否重试）
+        """
+        old_ws = self.connection_manager.ws
+        if old_ws is None:
+            logger.warning(f"【{self.cookie_id}】当前无 WebSocket 连接，无法断线重连刷新 token")
+            return False
+
+        # 清空内存 token 并删除缓存，保证接下来 refresh_token() 拉取「新」token 且覆盖缓存
+        self.current_token = None
+        try:
+            await self._cookie_token_manager._delete_cached_token()
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】删除缓存 token 失败（不影响后续刷新）: {self._safe_str(e)}")
+
+        # 前置判断：先刷新 token，拿不到新 token 就不动现有连接，避免风控期白白断连
+        try:
+            logger.info(f"【{self.cookie_id}】断线重连前先刷新 token...")
+            new_token = await self.refresh_token()
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】刷新 token 异常，放弃断线重连（保留当前连接）: {self._safe_str(e)}")
+            return False
+        refresh_status = getattr(self, 'last_token_refresh_status', '') or '未知'
+        if not new_token:
+            logger.error(
+                f"【{self.cookie_id}】刷新 token 未获取到新 token（原因: {refresh_status}），"
+                f"放弃断线重连（保留当前连接），本次发货失败留待重试"
+            )
+            return False
+        # 「本机滑块不处理 / 配置读取失败」等场景下，refresh_token 会回退复用过期缓存 token
+        # （返回值非空但并非新 token）。此时带着同一个过期 token 重连仍会 400，白白中断实时消息，
+        # 因此这里视同刷新失败：不断连，保留当前连接，交由外部续期/下轮重试。
+        if refresh_status in ("success_from_expired_cache", "success_from_expired_startup_cache"):
+            logger.error(
+                f"【{self.cookie_id}】刷新 token 仅复用了过期缓存（状态: {refresh_status}），"
+                f"并非新 token，放弃断线重连（保留当前连接），本次发货失败留待重试"
+            )
+            return False
+        # 刷新成功：清除「启动过期 token」标记，避免关连接后被 _reject_expired_startup_token 误清掉新 token
+        self._using_expired_startup_token = False
+        logger.info(f"【{self.cookie_id}】token 刷新成功，准备关闭当前 ws 带新 token 重连")
+
+        # 关闭当前 ws，触发主连接循环退出 async with 并重连（不调 restart_instance：那会取消当前任务）
+        try:
+            logger.info(f"【{self.cookie_id}】主动关闭 WebSocket 以带新 token 重连...")
+            await old_ws.close()
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】关闭 WebSocket 出错（继续等待重连）: {self._safe_str(e)}")
+
+        # 轮询等待新连接就绪：ws 换成新对象且状态为 CONNECTED
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            await asyncio.sleep(0.5)
+            new_ws = self.connection_manager.ws
+            if (
+                new_ws is not None
+                and new_ws is not old_ws
+                and self.connection_manager.connection_state == ConnectionState.CONNECTED
+            ):
+                logger.info(f"【{self.cookie_id}】断线重连已就绪，可重试创建会话")
+                return True
+
+        logger.error(f"【{self.cookie_id}】等待断线重连就绪超时（{timeout}s），放弃本次重试")
+        return False
 
     @staticmethod
     def _extract_cid_from_create_chat_response(response: dict) -> Optional[str]:

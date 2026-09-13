@@ -138,6 +138,7 @@ export function AutoReplyLogs() {
   const [logs, setLogs] = useState<AutoReplyLogItem[]>([])
   const [accounts, setAccounts] = useState<AccountDetail[]>([])
   const [selectedAccount, setSelectedAccount] = useState('')
+  const [selectedItemId, setSelectedItemId] = useState('')
   const [selectedRuleType, setSelectedRuleType] = useState('')
   const [selectedSendStatus, setSelectedSendStatus] = useState('')
   const [messageType, setMessageType] = useState('auto_reply')
@@ -177,6 +178,7 @@ export function AutoReplyLogs() {
       setLoading(true)
       const result = await getAutoReplyLogs({
         account_id: selectedAccount || undefined,
+        item_id: selectedItemId.trim() || undefined,
         start_date: startDate || undefined,
         end_date: endDate || undefined,
         matched_rule_type: messageType === 'auto_delivery' ? undefined : (selectedRuleType || undefined),
@@ -259,6 +261,16 @@ export function AutoReplyLogs() {
                 placeholder="全部账号"
               />
             </div>
+            <div className="input-group min-w-[220px]">
+              <label className="input-label">商品 ID</label>
+              <input
+                type="text"
+                value={selectedItemId}
+                onChange={(e) => setSelectedItemId(e.target.value)}
+                placeholder="请输入商品 ID"
+                className="input-ios"
+              />
+            </div>
             <div className="input-group">
               <label className="input-label">开始日期</label>
               <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="input-ios" />
@@ -325,19 +337,20 @@ export function AutoReplyLogs() {
           </h2>
           <span className="badge-primary">{total} 条记录</span>
         </div>
-        <div className="flex-1 overflow-auto relative">
+        <div className="table-scroll">
           {loading ? (
             <div className="flex justify-center py-8">
               <RefreshCw className="w-6 h-6 animate-spin text-blue-500" />
             </div>
           ) : (
-            <table className="table-ios min-w-[1800px]">
+            <table className="table-ios min-w-[1900px]">
               <thead className="sticky top-0 bg-white dark:bg-slate-800 z-[1]">
                 <tr>
                   <th>所属用户</th>
                   <th>账号</th>
                   <th>发送方</th>
                   <th>商品</th>
+                  <th>商品 ID</th>
                   <th>订单号</th>
                   <th>策略</th>
                   <th>回复类型</th>
@@ -358,7 +371,7 @@ export function AutoReplyLogs() {
               <tbody>
                 {logs.length === 0 ? (
                   <tr>
-                    <td colSpan={19}>
+                    <td colSpan={20}>
                       <div className="empty-state py-8">
                         <p className="text-slate-500 dark:text-slate-400">暂无消息日志</p>
                       </div>
@@ -381,8 +394,8 @@ export function AutoReplyLogs() {
                       </td>
                       <td className="align-top min-w-[220px]">
                         <div className="font-medium">{renderText(log.item_title)}</div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400 break-all">{renderText(log.item_id)}</div>
                       </td>
+                      <td className="align-top min-w-[180px] break-all">{renderText(log.item_id)}</td>
                       <td className="align-top min-w-[180px] break-all">{renderText(log.order_no)}</td>
                       <td className="align-top whitespace-nowrap">{buildStrategyLabel(log)}</td>
                       <td className="align-top whitespace-nowrap">{buildReplyModeLabel(log.reply_mode)}</td>

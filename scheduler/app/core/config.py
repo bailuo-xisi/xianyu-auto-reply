@@ -30,8 +30,12 @@ class SchedulerConfig(BaseConfig):
     
     # 服务间通信URL
     websocket_service_url: str = Field(
-        default="http://localhost:8090",
+        default="http://127.0.0.1:8090",
         alias="WEBSOCKET_SERVICE_URL"
+    )
+    backend_web_service_url: str = Field(
+        default="http://127.0.0.1:8089",
+        alias="BACKEND_WEB_SERVICE_URL",
     )
 
 

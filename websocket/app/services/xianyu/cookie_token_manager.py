@@ -31,7 +31,7 @@ from common.services.risk_control_log_query_service import (
     check_account_processing_risk_control_log,
     get_account_risk_control_lock,
 )
-from common.services.token_renewal_cache_service import mark_token_cache_expired
+from common.services.token_renewal_cache_service import delete_token_cache
 from common.services.token_api_mode import (
     get_token_api_mode_label,
     load_token_api_mode,
@@ -395,18 +395,29 @@ class CookieTokenManager:
                 self.last_token_refresh_status = "success_from_expired_cache"
         elif cached.get("renewal_promoted"):
             self.last_token_refresh_status = "success_from_renewal"
-            await self._reconnect_websocket_for_renewed_token()
+            await self._reconnect_websocket_for_renewed_token(reason="续期Token已生效")
         return cached_token
 
-    async def _reconnect_websocket_for_renewed_token(self) -> None:
-        """续期 Token 生效后关闭现有连接，由主循环携带新 Token 重连。"""
+    async def _reconnect_websocket_for_renewed_token(
+        self, reason: str = "Token续期生效"
+    ) -> None:
+        """Token 变化后关闭现有连接，由主循环携带新 Token 重连。
+
+        闲鱼 IM 的 WebSocket 在建连时一次性认证，不支持中途换 Token。Token 变化后
+        旧连接的认证已失效，必须关闭旧连接触发重连，否则会进入"心跳正常但收不到
+        业务消息"的僵尸状态。
+
+        Args:
+            reason: 触发重连的原因，用于日志与关闭帧说明，便于线上排查区分
+                续期生效与普通刷新两种场景。
+        """
         connection_manager = getattr(self.parent, "connection_manager", None)
         websocket = getattr(connection_manager, "ws", None)
         if websocket is None or getattr(websocket, "closed", True):
             return
 
-        logger.info(f"【{self.cookie_id}】续期Token已生效，准备重连WebSocket")
-        await websocket.close(code=1000, reason="Token续期生效")
+        logger.info(f"【{self.cookie_id}】{reason}，准备重连WebSocket")
+        await websocket.close(code=1000, reason=reason)
 
     async def _set_cached_token(self, token: str, device_id: str):
         """将token和device_id缓存到数据库
@@ -452,11 +463,9 @@ class CookieTokenManager:
             logger.warning(f"【{self.cookie_id}】缓存Token到数据库失败: {e}")
 
     async def _delete_cached_token(self):
-        """将当前失效 Token 缓存标记为失效，不物理删除历史数据。"""
-        invalidation = await mark_token_cache_expired(
+        """按唯一 user_id 删除当前账号的 Token 缓存。"""
+        invalidation = await delete_token_cache(
             token_user_id=self.myid,
-            expected_token=self._cached_token_in_use,
-            expected_device_id=self.device_id,
         )
         if invalidation.success:
             logger.info(f"【{self.cookie_id}】{invalidation.message}: user_id={self.myid}")
@@ -1227,8 +1236,14 @@ class CookieTokenManager:
                 logger.warning(f"【{self.cookie_id}】Token刷新成功，已重置消息接收时间标识")
                 logger.info(f"【{self.cookie_id}】Token刷新成功，新Token: {new_token}")
                 self.last_token_refresh_status = "success"
-                # 缓存token和device_id到数据库
+                # 必须在 _set_cached_token 覆盖 _cached_token_in_use 前捕获，否则永远为 False
+                token_changed = new_token != self._cached_token_in_use
                 await self._set_cached_token(new_token, self.device_id)
+                # Token 变化后旧连接的 Token 已失效，不重连会进入"心跳正常但收不到消息"的僵尸状态
+                if token_changed:
+                    await self._reconnect_websocket_for_renewed_token(
+                        reason="Token刷新后已变化"
+                    )
                 return new_token
 
             # Session过期先于滑块判断：Cookie 已失效时滑块验证结果同样无效，

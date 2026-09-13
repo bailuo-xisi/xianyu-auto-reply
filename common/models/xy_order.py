@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, JSON, Numeric, String
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, JSON, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from common.db.base_class import Base, TimestampMixin
@@ -59,6 +59,18 @@ class XYOrder(TimestampMixin, Base):
     delivery_method: Mapped[str | None] = mapped_column(String(32), comment="发货方式：manual-手动发货, auto-自动发货, scheduled-定时发货")
     delivery_content: Mapped[str | None] = mapped_column(String(2000), comment="发货内容（卡券内容）")
     delivery_fail_reason: Mapped[str | None] = mapped_column(String(2000), comment="发货失败原因")
+    # 账号开启“只发卡券”时，平台状态仍可能是待发货；内容一旦取出即标记，防止重复耗卡。
+    # 若消息发送失败，卡券内容会保存在 delivery_content 中并记录失败原因，交由人工补发。
+    card_only_delivered: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, comment="仅发卡券流程是否已处理"
+    )
+    # 同意后发货：买家在公开提货页点击「同意」的记录。点击后才触发免拼/确认发货并取卡展示。
+    agree_deliver_agreed: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, comment="同意后发货-买家是否已点击同意"
+    )
+    agree_deliver_agreed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), comment="同意后发货-买家点击同意时间"
+    )
     item_snapshot: Mapped[dict | None] = mapped_column(JSON, comment="商品快照")
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, comment="元数据")
     source: Mapped[str | None] = mapped_column(String(32), comment="数据来源：fetch_xianyu-获取闲鱼订单按钮")
