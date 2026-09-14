@@ -140,10 +140,11 @@ cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
 # 由 deploy_remote.sh 自动生成，请勿手动修改
 
 services:
-  # ====== 应用服务（服务器本地源码构建 + 远程 MySQL/Redis） ======
+  # ====== 应用服务（CI 传输的本地镜像或源码构建 + 远程 MySQL/Redis） ======
 
   # Backend-Web 服务
   backend-web:
+    image: xianyu-backend-web:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: backend-web/Dockerfile
@@ -203,6 +204,7 @@ services:
 
   # WebSocket 服务
   websocket:
+    image: xianyu-websocket:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: websocket/Dockerfile
@@ -255,6 +257,7 @@ services:
 
   # Scheduler 服务
   scheduler:
+    image: xianyu-scheduler:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: scheduler/Dockerfile
@@ -305,6 +308,7 @@ services:
 
   # 前端服务
   frontend:
+    image: xianyu-frontend:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: docker/frontend/Dockerfile

@@ -200,11 +200,13 @@ bash update.sh
 
 仓库内的 `.github/workflows/deploy.yml` 面向普通云服务器（VPS）部署。向 `main` 分支 push，或手动运行 `workflow_dispatch` 后，Actions 会执行以下流程：
 
-1. 校验 Python 模块并构建前端。
-2. 通过 SSH 登录已经部署好的服务器，在项目目录执行 `git fetch origin main` 和 `git reset --hard origin/main`。
-3. 服务器使用同步后的源码执行 `docker compose up -d --build`。
+1. 校验 Python 模块。
+2. GitHub Actions 在 runner 上构建 4 个 Docker 镜像，并使用 Actions 缓存加速后续构建。
+3. 通过现有 SSH 连接把压缩后的镜像直接传到服务器并执行 `docker load`，不上传到 GHCR。
+4. 通过 SSH 登录已经部署好的服务器，在项目目录同步并切换到本次提交。
+5. 服务器执行 `docker compose up -d --no-build`，只启动已传输的镜像。
 
-部署过程不会执行 `docker compose down`，也不会主动删除 MySQL / Redis 数据；应用容器会由 Compose 按最新源码重建或启动。
+部署过程不会执行 `docker compose down`，也不会主动删除 MySQL / Redis 数据；服务器不再编译 gcc、Playwright 等重量级依赖。
 
 首次使用前，在 GitHub 仓库的 **Settings -> Secrets and variables -> Actions** 中配置：
 
@@ -217,7 +219,7 @@ bash update.sh
 | Variable | `DEPLOY_PATH` | 可选，默认 `/opt/xianyu-auto-reply` |
 | Variable | `DEPLOY_PORT` | 可选，默认 `22` |
 
-这里不需要配置 GHCR，也不需要镜像包。服务器需提前完成项目部署，并保证 `DEPLOY_PATH` 指向项目 Git 仓库目录；该目录应包含 `.git` 和现有的 Compose 文件。服务器还需安装 Docker / Docker Compose，并保证 SSH 用户可以执行 Docker：
+这里不需要配置 GHCR，也不需要 GitHub Packages 镜像包。服务器需提前完成项目部署，并保证 `DEPLOY_PATH` 指向项目 Git 仓库目录；该目录应包含 `.git` 和现有的 Compose 文件。服务器还需安装 Docker / Docker Compose，并保证 SSH 用户可以执行 Docker：
 
 ```bash
 cd /opt/xianyu-auto-reply
@@ -225,7 +227,7 @@ git remote -v
 docker compose ps
 ```
 
-Actions 会保留服务器上的 `.env` 和数据目录，只同步 Git 仓库内容并在服务器本地重新构建应用容器。
+Actions 会保留服务器上的 `.env` 和数据目录，只同步 Git 仓库内容并加载本次传输的本地 Docker 镜像。
 
 当前 Compose 编排是单副本架构，因此 Actions 可以保证不会整体执行 `docker compose down`；切换某个单实例容器时仍存在该服务自身的重建窗口。若需要严格意义上的零秒切换，需要进一步改造成多副本加反向代理或 Docker Swarm/Kubernetes。
 

@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write
   contents: read
 
 jobs:
@@ -29,25 +30,12 @@ jobs:
       - name: Compile Python modules
         run: python -m compileall -q backend-web common websocket scheduler launcher
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm ci --no-audit --no-fund
-          npm run build
-
   deploy:
     name: Deploy to server
     needs: validate
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     environment: production
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -55,9 +43,53 @@ jobs:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/xianyu-auto-reply' }}
       DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      IMAGE_TAG: ${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend-web/Dockerfile
+          load: true
+          tags: xianyu-backend-web:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=backend-web
+          cache-to: type=gha,mode=max,scope=backend-web
+
+      - name: Build websocket image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: websocket/Dockerfile
+          load: true
+          tags: xianyu-websocket:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=websocket
+          cache-to: type=gha,mode=max,scope=websocket
+
+      - name: Build scheduler image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scheduler/Dockerfile
+          load: true
+          tags: xianyu-scheduler:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=scheduler
+          cache-to: type=gha,mode=max,scope=scheduler
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/frontend/Dockerfile
+          load: true
+          tags: xianyu-frontend:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
 
       - name: Start SSH agent
         uses: webfactory/ssh-agent@v0.9.0
@@ -77,18 +109,31 @@ jobs:
           fi
           chmod 600 "$HOME/.ssh/known_hosts"
 
+      - name: Transfer Docker images to server
+        shell: bash
+        run: |
+          set -euo pipefail
+          SSH_OPTS=(-p "$DEPLOY_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
+          docker save \
+            "xianyu-backend-web:${IMAGE_TAG}" \
+            "xianyu-websocket:${IMAGE_TAG}" \
+            "xianyu-scheduler:${IMAGE_TAG}" \
+            "xianyu-frontend:${IMAGE_TAG}" \
+            | gzip -1 \
+            | ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "bash -lc 'set -o pipefail; gzip -d | docker load'"
+
       - name: Sync repository and restart services
         shell: bash
         run: |
           set -euo pipefail
           SSH_OPTS=(-p "$DEPLOY_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
-          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE_SCRIPT'
+          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_TAG='$IMAGE_TAG' bash -s" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
           cd "$DEPLOY_PATH"
           export COMPOSE_PROJECT_NAME=xianyu-auto-reply
 
           git fetch origin main
-          git reset --hard origin/main
+          git reset --hard "$IMAGE_TAG"
 
           if [ -f .env ]; then
             sed -i -E 's|^MYSQL_IMAGE=.*aliyuncs.com/.*$|MYSQL_IMAGE=mysql:8.0|' .env || true
@@ -117,10 +162,11 @@ jobs:
             DC=(docker-compose)
           fi
 
-          if grep -qE '^[[:space:]]+build:' "$COMPOSE_FILE"; then
-            "${DC[@]}" -f "$COMPOSE_FILE" "${ENV_ARGS[@]}" up -d --build --remove-orphans
+          if grep -qE '^[[:space:]]+image: xianyu-(backend-web|websocket|scheduler|frontend):' "$COMPOSE_FILE"; then
+            "${DC[@]}" -f "$COMPOSE_FILE" "${ENV_ARGS[@]}" config --quiet
+            "${DC[@]}" -f "$COMPOSE_FILE" "${ENV_ARGS[@]}" up -d --no-build --remove-orphans
           else
-            printf 'Compose file %s has no build definitions; refusing registry-only deployment.\n' "$COMPOSE_FILE" >&2
+            printf 'Compose file %s has no local application image definitions.\n' "$COMPOSE_FILE" >&2
             exit 1
           fi
 

@@ -207,10 +207,11 @@ services:
       retries: 5
       start_period: 10s
 
-  # ====== 应用服务（服务器本地源码构建） ======
+  # ====== 应用服务（CI 传输的本地镜像；手动部署时可源码构建） ======
 
   # Backend-Web 服务
   backend-web:
+    image: xianyu-backend-web:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: backend-web/Dockerfile
@@ -275,6 +276,7 @@ services:
 
   # WebSocket 服务
   websocket:
+    image: xianyu-websocket:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: websocket/Dockerfile
@@ -331,6 +333,7 @@ services:
 
   # Scheduler 服务
   scheduler:
+    image: xianyu-scheduler:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: scheduler/Dockerfile
@@ -385,6 +388,7 @@ services:
 
   # 前端服务
   frontend:
+    image: xianyu-frontend:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: docker/frontend/Dockerfile

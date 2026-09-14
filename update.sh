@@ -139,6 +139,7 @@ services:
       start_period: 10s
 
   backend-web:
+    image: xianyu-backend-web:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: backend-web/Dockerfile
@@ -201,6 +202,7 @@ services:
       start_period: 60s
 
   websocket:
+    image: xianyu-websocket:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: websocket/Dockerfile
@@ -255,6 +257,7 @@ services:
       start_period: 60s
 
   scheduler:
+    image: xianyu-scheduler:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: scheduler/Dockerfile
@@ -307,6 +310,7 @@ services:
       start_period: 60s
 
   frontend:
+    image: xianyu-frontend:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: docker/frontend/Dockerfile

@@ -62,6 +62,7 @@ services:
 
   # Backend-Web 服务
   backend-web:
+    image: xianyu-backend-web:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: backend-web/Dockerfile
@@ -126,6 +127,7 @@ services:
 
   # WebSocket 服务
   websocket:
+    image: xianyu-websocket:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: websocket/Dockerfile
@@ -182,6 +184,7 @@ services:
 
   # Scheduler 服务
   scheduler:
+    image: xianyu-scheduler:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: scheduler/Dockerfile
@@ -236,6 +239,7 @@ services:
 
   # 前端服务
   frontend:
+    image: xianyu-frontend:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: docker/frontend/Dockerfile
