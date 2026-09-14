@@ -144,7 +144,7 @@ jobs:
         run: |
           set -euo pipefail
           SSH_OPTS=(-p "$DEPLOY_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
-          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_REGISTRY='$REGISTRY/$IMAGE_NAMESPACE' IMAGE_TAG=latest bash -s" <<'REMOTE_SCRIPT'
+          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_REGISTRY='$REGISTRY/$IMAGE_NAMESPACE' IMAGE_TAG='$IMAGE_TAG' bash -s" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
           cd "$DEPLOY_PATH"
 
