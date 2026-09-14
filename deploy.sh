@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==========================================
 # 闲鱼自动回复系统 - 一键部署脚本
-# 自动生成远程镜像版 docker-compose.deploy.yml 并拉取镜像启动
+# 自动生成服务器源码构建版 docker-compose.deploy.yml 并启动
 # 用法: bash deploy.sh
 # ==========================================
 
@@ -72,10 +72,6 @@ BACKEND_WEB_PORT=8089
 WEBSOCKET_PORT=8090
 SCHEDULER_PORT=8091
 
-# 镜像配置
-IMAGE_REGISTRY=ghcr.io/bailuo-xisi
-IMAGE_TAG=latest
-
 # 基础镜像（Docker Hub 官方镜像）
 MYSQL_IMAGE=mysql:8.0
 REDIS_IMAGE=redis:7-alpine
@@ -131,13 +127,12 @@ ENVEOF
     echo ""
 fi
 
-migrate_legacy_registry() {
+migrate_legacy_base_images() {
     local key current replacement
-    for key in IMAGE_REGISTRY MYSQL_IMAGE REDIS_IMAGE; do
+    for key in MYSQL_IMAGE REDIS_IMAGE; do
         current="$(grep -E "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d '=' -f2- | tr -d '\r' || true)"
         replacement=""
         case "$key" in
-            IMAGE_REGISTRY) replacement="ghcr.io/bailuo-xisi" ;;
             MYSQL_IMAGE) replacement="mysql:8.0" ;;
             REDIS_IMAGE) replacement="redis:7-alpine" ;;
         esac
@@ -147,13 +142,13 @@ migrate_legacy_registry() {
     done
 }
 
-migrate_legacy_registry
+migrate_legacy_base_images
 
-# ========== 生成 docker-compose.deploy.yml（远程镜像版） ==========
-echo "[信息] 生成 docker-compose.deploy.yml（远程镜像版）..."
+# ========== 生成 docker-compose.deploy.yml（源码构建版） ==========
+echo "[信息] 生成 docker-compose.deploy.yml（源码构建版）..."
 cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
-# Docker Compose 配置文件 - 远程镜像部署版
-# 闲鱼自动回复系统 - 从镜像仓库拉取预构建镜像
+# Docker Compose 配置文件 - 服务器源码构建部署版
+# 闲鱼自动回复系统 - 在服务器上从 Git 工作区构建应用镜像
 # 由 deploy.sh 自动生成，请勿手动修改
 
 services:
@@ -212,11 +207,13 @@ services:
       retries: 5
       start_period: 10s
 
-  # ====== 应用服务（远程镜像） ======
+  # ====== 应用服务（服务器本地源码构建） ======
 
   # Backend-Web 服务
   backend-web:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-backend-web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: backend-web/Dockerfile
     container_name: xianyu-backend-web
     restart: unless-stopped
     environment:
@@ -278,7 +275,9 @@ services:
 
   # WebSocket 服务
   websocket:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-websocket:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: websocket/Dockerfile
     container_name: xianyu-websocket
     restart: unless-stopped
     environment:
@@ -332,7 +331,9 @@ services:
 
   # Scheduler 服务
   scheduler:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-scheduler:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: scheduler/Dockerfile
     container_name: xianyu-scheduler
     restart: unless-stopped
     environment:
@@ -384,7 +385,9 @@ services:
 
   # 前端服务
   frontend:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
     container_name: xianyu-frontend
     restart: unless-stopped
     environment:
@@ -458,13 +461,8 @@ mkdir -p \
     "$WORK_DIR/xianyu_auto_reply/browser_data"
 
 # ========== 部署 ==========
-echo -e "${YELLOW}步骤 1/2: 拉取最新镜像（现有容器保持运行）...${NC}"
-$DC_CMD pull
-echo -e "${GREEN}✓ 镜像拉取完成${NC}"
-
-echo ""
-echo -e "${YELLOW}步骤 2/2: 启动或平滑更新服务（不执行 docker compose down）...${NC}"
-$DC_CMD up -d
+echo -e "${YELLOW}步骤 1/1: 使用当前源码构建并启动服务（不执行 docker compose down）...${NC}"
+$DC_CMD up -d --build --remove-orphans
 echo -e "${GREEN}✓ 服务已启动${NC}"
 
 echo ""

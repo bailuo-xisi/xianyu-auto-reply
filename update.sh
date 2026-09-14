@@ -3,10 +3,10 @@
 # 闲鱼自动回复系统 - 一键更新脚本
 #
 # 功能：
-# 1. 拉取最新远程镜像并重建应用容器（frontend / backend-web / websocket / scheduler）
+# 1. 使用最新源码重建应用容器（frontend / backend-web / websocket / scheduler）
 # 2. 不影响 MySQL / Redis 的数据（数据卷保留）
 # 3. 自动检测并清理加密版（enc）的容器和镜像（保留数据卷）
-# 4. 收尾清理本项目被替换的旧应用镜像，不影响其他项目
+# 4. 不删除 MySQL / Redis 数据，也不执行 docker compose down
 #
 # 用法：
 #   bash update.sh [update|logs|status|clean-enc|help]
@@ -53,19 +53,6 @@ ENC_IMAGE_NAMES=(
     "xianyu-enc-scheduler"
 )
 
-# 应用镜像名（不含加密版前缀）
-APP_IMAGE_NAMES=(
-    "xianyu-frontend"
-    "xianyu-backend-web"
-    "xianyu-websocket"
-    "xianyu-scheduler"
-)
-
-# 更新前记录的应用镜像 ID
-APP_OLD_IMAGE_IDS=()
-# 完整镜像 reference（registry/name:tag）
-APP_IMAGE_REFS=()
-
 print_banner() {
     echo "=========================================="
     echo "  闲鱼自动回复系统 - 一键更新"
@@ -96,7 +83,7 @@ check_docker() {
     echo ""
 }
 
-# 生成远程镜像版 docker-compose.deploy.yml
+# 生成服务器源码构建版 docker-compose.deploy.yml
 generate_compose_file() {
     cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
 services:
@@ -152,7 +139,9 @@ services:
       start_period: 10s
 
   backend-web:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-backend-web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: backend-web/Dockerfile
     container_name: xianyu-backend-web
     restart: unless-stopped
     environment:
@@ -212,7 +201,9 @@ services:
       start_period: 60s
 
   websocket:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-websocket:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: websocket/Dockerfile
     container_name: xianyu-websocket
     restart: unless-stopped
     environment:
@@ -264,7 +255,9 @@ services:
       start_period: 60s
 
   scheduler:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-scheduler:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: scheduler/Dockerfile
     container_name: xianyu-scheduler
     restart: unless-stopped
     environment:
@@ -314,7 +307,9 @@ services:
       start_period: 60s
 
   frontend:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
     container_name: xianyu-frontend
     restart: unless-stopped
     environment:
@@ -359,10 +354,6 @@ FRONTEND_PORT=9000
 BACKEND_WEB_PORT=8089
 WEBSOCKET_PORT=8090
 SCHEDULER_PORT=8091
-
-# 镜像配置
-IMAGE_REGISTRY=ghcr.io/bailuo-xisi
-IMAGE_TAG=latest
 
 # 基础镜像（Docker Hub 官方镜像）
 MYSQL_IMAGE=mysql:8.0
@@ -457,16 +448,11 @@ upsert_env_value() {
     fi
 }
 
-migrate_legacy_registry() {
-    local registry mysql_image redis_image
-    registry="$(read_env_value IMAGE_REGISTRY)"
+migrate_legacy_base_images() {
+    local mysql_image redis_image
     mysql_image="$(read_env_value MYSQL_IMAGE)"
     redis_image="$(read_env_value REDIS_IMAGE)"
 
-    if [[ "$registry" == *aliyuncs.com/* ]]; then
-        echo -e "${YELLOW}[信息] 将应用镜像仓库迁移到 GitHub Container Registry${NC}"
-        upsert_env_value IMAGE_REGISTRY ghcr.io/bailuo-xisi
-    fi
     if [[ "$mysql_image" == *aliyuncs.com/* ]]; then
         upsert_env_value MYSQL_IMAGE mysql:8.0
     fi
@@ -543,35 +529,11 @@ cleanup_enc_version() {
     echo ""
 }
 
-# 解析镜像完整引用
-resolve_app_image_refs() {
-    local registry tag
-    registry="$(read_env_value IMAGE_REGISTRY)"
-    tag="$(read_env_value IMAGE_TAG)"
-    registry="${registry:-ghcr.io/bailuo-xisi}"
-    tag="${tag:-latest}"
-
-    APP_IMAGE_REFS=()
-    for name in "${APP_IMAGE_NAMES[@]}"; do
-        APP_IMAGE_REFS+=("${registry}/${name}:${tag}")
-    done
-}
-
-# 记录当前应用镜像 ID（用于后续清理旧镜像）
-record_old_app_image_ids() {
-    APP_OLD_IMAGE_IDS=()
-    for ref in "${APP_IMAGE_REFS[@]}"; do
-        local id
-        id="$(docker images --no-trunc --format '{{.ID}}' "$ref" 2>/dev/null | head -n 1)"
-        APP_OLD_IMAGE_IDS+=("$id")
-    done
-}
-
-# 拉取最新镜像
-pull_latest_images() {
-    echo -e "${YELLOW}[信息] 拉取最新应用镜像（不影响 MySQL/Redis）...${NC}"
-    "${DC_CMD[@]}" pull "${APP_SERVICES[@]}"
-    echo -e "${GREEN}✓ 最新应用镜像拉取完成${NC}"
+# 构建最新应用镜像
+build_latest_images() {
+    echo -e "${YELLOW}[信息] 使用当前源码构建应用镜像（不影响 MySQL/Redis）...${NC}"
+    "${DC_CMD[@]}" build --pull "${APP_SERVICES[@]}"
+    echo -e "${GREEN}✓ 应用镜像构建完成${NC}"
     echo ""
 }
 
@@ -629,34 +591,10 @@ recreate_app_services() {
     local service
     for service in "backend-web" "websocket" "scheduler" "frontend"; do
         echo -e "${CYAN}[信息] 更新服务: ${service}${NC}"
-        "${DC_CMD[@]}" up -d --no-deps --force-recreate "$service"
+        "${DC_CMD[@]}" up -d --no-deps --force-recreate --build "$service"
         wait_for_service "$service"
     done
     "${DC_CMD[@]}" ps
-    echo ""
-}
-
-# 清理本项目被替换的旧应用镜像
-cleanup_old_app_images() {
-    echo -e "${YELLOW}[信息] 清理旧应用镜像（不影响其他项目）...${NC}"
-    local removed=0
-    local i
-    for ((i=0; i<${#APP_IMAGE_REFS[@]}; i++)); do
-        local ref="${APP_IMAGE_REFS[$i]}"
-        local old_id="${APP_OLD_IMAGE_IDS[$i]}"
-        if [ -z "$old_id" ]; then
-            continue
-        fi
-        local new_id
-        new_id="$(docker images --no-trunc --format '{{.ID}}' "$ref" 2>/dev/null | head -n 1)"
-        if [ -z "$new_id" ] || [ "$new_id" = "$old_id" ]; then
-            continue
-        fi
-        if docker rmi "$old_id" >/dev/null 2>&1; then
-            removed=$((removed+1))
-        fi
-    done
-    echo -e "${GREEN}✓ 已清理 ${removed} 个旧应用镜像${NC}"
     echo ""
 }
 
@@ -695,15 +633,12 @@ run_update() {
     print_banner
     check_docker
     check_deploy_files
-    migrate_legacy_registry
+    migrate_legacy_base_images
     create_mount_dirs
     cleanup_enc_version
     ensure_infrastructure
-    resolve_app_image_refs
-    record_old_app_image_ids
-    pull_latest_images
+    build_latest_images
     recreate_app_services
-    cleanup_old_app_images
     print_success_info
 }
 
@@ -722,7 +657,7 @@ run_clean_enc() {
 show_help() {
     echo "用法: bash update.sh [update|logs|status|clean-enc|help]"
     echo ""
-    echo "  update    - 拉取最新镜像并重建应用容器，不影响 MySQL/Redis 数据（默认）"
+    echo "  update    - 使用当前源码重建应用容器，不影响 MySQL/Redis 数据（默认）"
     echo "  logs      - 查看实时日志"
     echo "  status    - 查看服务状态"
     echo "  clean-enc - 仅清理加密版容器和镜像（保留数据卷）"

@@ -1,5 +1,5 @@
-# Docker Compose 配置文件 - 远程镜像部署版
-# 闲鱼自动回复系统 - 从镜像仓库拉取预构建镜像
+# Docker Compose 配置文件 - 服务器源码构建部署版
+# 闲鱼自动回复系统 - 在服务器上从 Git 工作区构建应用镜像
 # 由 deploy.sh 自动生成，请勿手动修改
 
 services:
@@ -57,11 +57,13 @@ services:
       retries: 5
       start_period: 10s
 
-  # ====== 应用服务（远程镜像） ======
+  # ====== 应用服务（服务器本地源码构建） ======
 
   # Backend-Web 服务
   backend-web:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-backend-web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: backend-web/Dockerfile
     container_name: xianyu-backend-web
     restart: unless-stopped
     environment:
@@ -122,7 +124,9 @@ services:
 
   # WebSocket 服务
   websocket:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-websocket:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: websocket/Dockerfile
     container_name: xianyu-websocket
     restart: unless-stopped
     environment:
@@ -175,7 +179,9 @@ services:
 
   # Scheduler 服务
   scheduler:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-scheduler:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: scheduler/Dockerfile
     container_name: xianyu-scheduler
     restart: unless-stopped
     environment:
@@ -226,7 +232,9 @@ services:
 
   # 前端服务
   frontend:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
     container_name: xianyu-frontend
     restart: unless-stopped
     environment:

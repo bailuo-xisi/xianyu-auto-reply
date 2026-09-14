@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-: "${IMAGE_REGISTRY:?IMAGE_REGISTRY is required}"
-: "${IMAGE_TAG:?IMAGE_TAG is required}"
-
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="${DEPLOY_DIR:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 COMPOSE_FILE="${COMPOSE_FILE:-}"
 ENV_FILE="${ENV_FILE:-}"
-COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-xianyu-auto-reply}"
-FULL_REGISTRY="${IMAGE_REGISTRY%/}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-xianyu-auto-reply}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-300}"
 
 SERVICES=(backend-web websocket scheduler frontend)
@@ -115,15 +111,13 @@ cleanup() {
 trap cleanup EXIT
 
 compose() {
-    IMAGE_REGISTRY="$FULL_REGISTRY" IMAGE_TAG="$IMAGE_TAG" COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
-        "${DC[@]}" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+    "${DC[@]}" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
 }
 
 compose_with_override() {
     local override_file="$1"
     shift
-    IMAGE_REGISTRY="$FULL_REGISTRY" IMAGE_TAG="$IMAGE_TAG" COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
-        "${DC[@]}" -f "$COMPOSE_FILE" -f "$override_file" --env-file "$ENV_FILE" "$@"
+    "${DC[@]}" -f "$COMPOSE_FILE" -f "$override_file" --env-file "$ENV_FILE" "$@"
 }
 
 record_current_images() {
@@ -233,7 +227,6 @@ on_error() {
 trap on_error ERR
 
 migrate_legacy_base_images
-log "Using image registry $FULL_REGISTRY and tag $IMAGE_TAG"
 log "Starting infrastructure without stopping existing containers"
 for infrastructure in mysql redis; do
     if compose config --services 2>/dev/null | grep -qx "$infrastructure"; then
@@ -243,8 +236,8 @@ done
 
 record_current_images
 
-log "Pulling the new application images while the current release keeps running"
-compose pull "${SERVICES[@]}"
+log "Building the new application images while the current release keeps running"
+compose build --pull "${SERVICES[@]}"
 
 for service in backend-web websocket scheduler frontend; do
     UPDATED_SERVICES+=("$service")
@@ -252,9 +245,6 @@ for service in backend-web websocket scheduler frontend; do
     compose up -d --no-deps --force-recreate "$service"
     wait_for_service "$service"
 done
-
-upsert_env IMAGE_REGISTRY "$FULL_REGISTRY"
-upsert_env IMAGE_TAG "$IMAGE_TAG"
 
 log "Deployment completed without docker compose down"
 compose ps

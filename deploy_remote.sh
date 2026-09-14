@@ -2,7 +2,7 @@
 # ==========================================
 # 闲鱼自动回复系统 - 远程 MySQL/Redis 一键部署脚本
 # 使用外部（远程）MySQL 和 Redis，仅启动应用服务（不内置 mysql/redis 容器）
-# 自动生成 docker-compose.remote.yml 与 .env.remote 并拉取镜像启动
+# 自动生成 docker-compose.remote.yml 与 .env.remote 并从源码构建启动
 # 用法: bash deploy_remote.sh
 # ==========================================
 
@@ -80,10 +80,6 @@ BACKEND_WEB_PORT=8089
 WEBSOCKET_PORT=8090
 SCHEDULER_PORT=8091
 
-# 镜像配置
-IMAGE_REGISTRY=ghcr.io/bailuo-xisi
-IMAGE_TAG=latest
-
 # 日志级别
 LOG_LEVEL=INFO
 
@@ -136,12 +132,7 @@ ENVEOF
     exit 0
 fi
 
-legacy_registry="$(grep -E '^IMAGE_REGISTRY=' "$ENV_FILE" | tail -n 1 | cut -d '=' -f2- | tr -d '\r' || true)"
-if [[ "$legacy_registry" == *aliyuncs.com/* ]]; then
-    sed -i -E 's|^IMAGE_REGISTRY=.*$|IMAGE_REGISTRY=ghcr.io/bailuo-xisi|' "$ENV_FILE"
-fi
-
-# ========== 生成 docker-compose.remote.yml（远程镜像 + 远程 MySQL/Redis） ==========
+# ========== 生成 docker-compose.remote.yml（源码构建 + 远程 MySQL/Redis） ==========
 echo "[信息] 生成 docker-compose.remote.yml..."
 cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
 # Docker Compose 配置文件 - 远程 MySQL / Redis 版
@@ -149,11 +140,13 @@ cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
 # 由 deploy_remote.sh 自动生成，请勿手动修改
 
 services:
-  # ====== 应用服务（远程镜像 + 远程 MySQL/Redis） ======
+  # ====== 应用服务（服务器本地源码构建 + 远程 MySQL/Redis） ======
 
   # Backend-Web 服务
   backend-web:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-backend-web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: backend-web/Dockerfile
     container_name: xianyu-backend-web
     restart: unless-stopped
     environment:
@@ -210,7 +203,9 @@ services:
 
   # WebSocket 服务
   websocket:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-websocket:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: websocket/Dockerfile
     container_name: xianyu-websocket
     restart: unless-stopped
     environment:
@@ -260,7 +255,9 @@ services:
 
   # Scheduler 服务
   scheduler:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-scheduler:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: scheduler/Dockerfile
     container_name: xianyu-scheduler
     restart: unless-stopped
     environment:
@@ -308,7 +305,9 @@ services:
 
   # 前端服务
   frontend:
-    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
     container_name: xianyu-frontend
     restart: unless-stopped
     environment:
@@ -368,18 +367,8 @@ mkdir -p \
     "$WORK_DIR/xianyu_auto_reply/browser_data"
 
 # ========== 部署 ==========
-echo -e "${YELLOW}步骤 1/3: 拉取最新镜像（旧容器保持运行，减少停机时间）...${NC}"
-$DC_CMD pull
-echo -e "${GREEN}✓ 镜像拉取完成${NC}"
-
-echo ""
-echo -e "${YELLOW}步骤 2/3: 停止旧容器（仅本项目）...${NC}"
-$DC_CMD down 2>/dev/null || true
-echo -e "${GREEN}✓ 旧容器已清理${NC}"
-
-echo ""
-echo -e "${YELLOW}步骤 3/3: 启动服务...${NC}"
-$DC_CMD up -d
+echo -e "${YELLOW}步骤 1/1: 使用当前源码构建并启动服务...${NC}"
+$DC_CMD up -d --build --remove-orphans
 echo -e "${GREEN}✓ 服务已启动${NC}"
 
 echo ""
