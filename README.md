@@ -183,7 +183,7 @@ bash deploy.sh
 ```
 
 - 首次运行会自动生成 `.env` 配置文件和 `docker-compose.deploy.yml`
-- 从阿里云镜像仓库拉取预构建镜像并启动
+- 从 GitHub Container Registry（GHCR）拉取预构建镜像并启动
 - 如果检测到加密版容器会自动清理（保留数据卷）
 - 部署完成后默认访问地址：
   - 前端：`http://服务器IP:9000`
@@ -196,39 +196,39 @@ bash deploy.sh
 bash update.sh
 ```
 
+手动执行 `deploy.sh` / `update.sh` 时，如果 GHCR 镜像保持私有，请先在服务器执行 `docker login ghcr.io`；GitHub Actions 部署会自动登录，无需手动处理。
+
 ### GitHub Actions 自动发布
 
-仓库新增 `.github/workflows/deploy.yml`。向 `main` 分支 push 后，Actions 会执行以下流程：
+仓库内的 `.github/workflows/deploy.yml` 面向普通云服务器（VPS）部署。向 `main` 分支 push，或手动运行 `workflow_dispatch` 后，Actions 会执行以下流程：
 
 1. 校验 Python 模块并构建前端。
-2. 并行构建 4 个 amd64 Docker 镜像，并推送不可变的 commit SHA tag。
-3. 通过 SSH 将部署脚本发送到服务器。
-4. 服务器先拉取新镜像，保持当前容器继续运行，再按 `backend-web`、`websocket`、`scheduler`、`frontend` 顺序逐个切换并等待健康检查。
+2. 并行构建 4 个 amd64 Docker 镜像，并推送到 GitHub Container Registry（`ghcr.io`），同时保留不可变的 commit SHA tag。
+3. 通过 SSH 登录已经部署好的服务器，在项目目录执行 `git fetch origin main` 和 `git reset --hard origin/main`。
+4. 服务器根据现有 Compose 配置拉取镜像或重新构建，然后启动最新服务。
 
-部署过程不会执行 `docker compose down`，也不会停止 MySQL / Redis；失败时会尝试恢复本次更新前的应用镜像。
+部署过程不会执行 `docker compose down`，也不会主动删除 MySQL / Redis 数据；应用容器会由 Compose 按最新配置重建或启动。
 
 首次使用前，在 GitHub 仓库的 **Settings -> Secrets and variables -> Actions** 中配置：
 
 | 类型 | 名称 | 说明 |
 |------|------|------|
-| Secret | `REGISTRY_USERNAME` | 阿里云 ACR 用户名 |
-| Secret | `REGISTRY_PASSWORD` | 阿里云 ACR 密码 |
 | Secret | `DEPLOY_HOST` | 服务器地址 |
 | Secret | `DEPLOY_USER` | SSH 用户名 |
 | Secret | `DEPLOY_SSH_KEY` | SSH 私钥 |
 | Secret | `DEPLOY_KNOWN_HOSTS` | 可选，服务器 SSH host key |
-| Variable | `IMAGE_REGISTRY` | 可选，默认 `registry.cn-shanghai.aliyuncs.com` |
-| Variable | `IMAGE_NAMESPACE` | 可选，默认 `zhinian-software` |
 | Variable | `DEPLOY_PATH` | 可选，默认 `/opt/xianyu-auto-reply` |
 | Variable | `DEPLOY_PORT` | 可选，默认 `22` |
 
-服务器需先完成一次基础部署，并保证部署用户可以执行 Docker：
+镜像使用 GitHub Actions 自带的 `GITHUB_TOKEN` 推送和拉取，不需要配置阿里云 ACR 账号。服务器需提前完成项目部署，并保证 `DEPLOY_PATH` 指向项目 Git 仓库目录；该目录应包含 `.git` 和现有的 Compose 文件。服务器还需安装 Docker / Docker Compose，并保证 SSH 用户可以执行 Docker：
 
 ```bash
-git clone https://github.com/bailuo-xisi/xianyu-auto-reply.git /opt/xianyu-auto-reply
 cd /opt/xianyu-auto-reply
-bash deploy.sh
+git remote -v
+docker compose ps
 ```
+
+Actions 会保留服务器上的 `.env` 和数据目录，只同步 Git 仓库内容。GHCR 中的应用镜像默认可保持私有，Actions 每次部署都会在服务器上临时完成登录。
 
 当前 Compose 编排是单副本架构，因此 Actions 可以保证不会整体停服，且拉取镜像阶段完全不中断；切换某个单实例容器时仍存在该服务自身的重建窗口。若需要严格意义上的零秒切换，需要进一步改造成多副本加反向代理或 Docker Swarm/Kubernetes。
 
@@ -431,7 +431,7 @@ npm run dev
 | `build_scheduler.sh` | Linux | 单独重建并重启 Scheduler 服务 |
 | `EXE打包构建.bat` | Windows | 使用 Nuitka 打包桌面启动器 EXE |
 | `离线依赖打包.bat` | Windows | 打包所有 Python 依赖供离线安装 |
-| `scripts/Pipeline脚本-xianyu-auto-reply.groovy` | Jenkins | CI/CD 流水线，构建多架构镜像并推送到阿里云 ACR |
+| `scripts/Pipeline脚本-xianyu-auto-reply.groovy` | Jenkins | 旧版 CI/CD 流水线；当前推荐使用 GitHub Actions + GHCR |
 
 ## 安全说明
 

@@ -53,6 +53,31 @@ die() {
     exit 1
 }
 
+upsert_env() {
+    local key="$1"
+    local value="$2"
+    if grep -qE "^${key}=" "$ENV_FILE"; then
+        sed -i -E "s|^${key}=.*$|${key}=${value}|" "$ENV_FILE"
+    else
+        printf '\n%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    fi
+}
+
+migrate_legacy_base_images() {
+    local mysql_image redis_image
+    mysql_image="$(grep -E '^MYSQL_IMAGE=' "$ENV_FILE" | tail -n 1 | cut -d '=' -f2- | tr -d '\r' || true)"
+    redis_image="$(grep -E '^REDIS_IMAGE=' "$ENV_FILE" | tail -n 1 | cut -d '=' -f2- | tr -d '\r' || true)"
+
+    if [[ "$mysql_image" == *aliyuncs.com/* ]]; then
+        log "Migrating MySQL image from the legacy registry to Docker Hub"
+        upsert_env MYSQL_IMAGE mysql:8.0
+    fi
+    if [[ "$redis_image" == *aliyuncs.com/* ]]; then
+        log "Migrating Redis image from the legacy registry to Docker Hub"
+        upsert_env REDIS_IMAGE redis:7-alpine
+    fi
+}
+
 if [[ ! -f "$COMPOSE_FILE" ]]; then
     die "Compose file not found: $COMPOSE_FILE"
 fi
@@ -207,6 +232,7 @@ on_error() {
 }
 trap on_error ERR
 
+migrate_legacy_base_images
 log "Using image registry $FULL_REGISTRY and tag $IMAGE_TAG"
 log "Starting infrastructure without stopping existing containers"
 for infrastructure in mysql redis; do
@@ -226,16 +252,6 @@ for service in backend-web websocket scheduler frontend; do
     compose up -d --no-deps --force-recreate "$service"
     wait_for_service "$service"
 done
-
-upsert_env() {
-    local key="$1"
-    local value="$2"
-    if grep -qE "^${key}=" "$ENV_FILE"; then
-        sed -i -E "s|^${key}=.*$|${key}=${value}|" "$ENV_FILE"
-    else
-        printf '\n%s=%s\n' "$key" "$value" >> "$ENV_FILE"
-    fi
-}
 
 upsert_env IMAGE_REGISTRY "$FULL_REGISTRY"
 upsert_env IMAGE_TAG "$IMAGE_TAG"

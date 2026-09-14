@@ -101,7 +101,7 @@ generate_compose_file() {
     cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
 services:
   mysql:
-    image: ${MYSQL_IMAGE:-registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-mysql:8.0}
+    image: ${MYSQL_IMAGE:-mysql:8.0}
     container_name: xianyu-mysql
     restart: unless-stopped
     environment:
@@ -129,7 +129,7 @@ services:
       start_period: 30s
 
   redis:
-    image: ${REDIS_IMAGE:-registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-redis:7-alpine}
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     container_name: xianyu-redis
     restart: unless-stopped
     command: >
@@ -152,7 +152,7 @@ services:
       start_period: 10s
 
   backend-web:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-backend-web:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-backend-web:${IMAGE_TAG:-latest}
     container_name: xianyu-backend-web
     restart: unless-stopped
     environment:
@@ -212,7 +212,7 @@ services:
       start_period: 60s
 
   websocket:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-websocket:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-websocket:${IMAGE_TAG:-latest}
     container_name: xianyu-websocket
     restart: unless-stopped
     environment:
@@ -264,7 +264,7 @@ services:
       start_period: 60s
 
   scheduler:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-scheduler:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-scheduler:${IMAGE_TAG:-latest}
     container_name: xianyu-scheduler
     restart: unless-stopped
     environment:
@@ -314,7 +314,7 @@ services:
       start_period: 60s
 
   frontend:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-frontend:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-frontend:${IMAGE_TAG:-latest}
     container_name: xianyu-frontend
     restart: unless-stopped
     environment:
@@ -361,12 +361,12 @@ WEBSOCKET_PORT=8090
 SCHEDULER_PORT=8091
 
 # 镜像配置
-IMAGE_REGISTRY=registry.cn-shanghai.aliyuncs.com/zhinian-software
+IMAGE_REGISTRY=ghcr.io/bailuo-xisi
 IMAGE_TAG=latest
 
-# 基础镜像（MySQL / Redis，从阿里云仓库拉取，由 sync_base_images.sh 同步上传）
-MYSQL_IMAGE=registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-mysql:8.0
-REDIS_IMAGE=registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-redis:7-alpine
+# 基础镜像（Docker Hub 官方镜像）
+MYSQL_IMAGE=mysql:8.0
+REDIS_IMAGE=redis:7-alpine
 
 # 日志级别
 LOG_LEVEL=INFO
@@ -447,6 +447,34 @@ read_env_value() {
     echo "$value"
 }
 
+upsert_env_value() {
+    local key="$1"
+    local value="$2"
+    if grep -qE "^${key}=" "$ENV_FILE"; then
+        sed -i -E "s|^${key}=.*$|${key}=${value}|" "$ENV_FILE"
+    else
+        printf '\n%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    fi
+}
+
+migrate_legacy_registry() {
+    local registry mysql_image redis_image
+    registry="$(read_env_value IMAGE_REGISTRY)"
+    mysql_image="$(read_env_value MYSQL_IMAGE)"
+    redis_image="$(read_env_value REDIS_IMAGE)"
+
+    if [[ "$registry" == *aliyuncs.com/* ]]; then
+        echo -e "${YELLOW}[信息] 将应用镜像仓库迁移到 GitHub Container Registry${NC}"
+        upsert_env_value IMAGE_REGISTRY ghcr.io/bailuo-xisi
+    fi
+    if [[ "$mysql_image" == *aliyuncs.com/* ]]; then
+        upsert_env_value MYSQL_IMAGE mysql:8.0
+    fi
+    if [[ "$redis_image" == *aliyuncs.com/* ]]; then
+        upsert_env_value REDIS_IMAGE redis:7-alpine
+    fi
+}
+
 # 检测并清理加密版容器和镜像（保留数据卷）
 cleanup_enc_version() {
     echo -e "${YELLOW}[信息] 检测加密版部署残留...${NC}"
@@ -520,7 +548,7 @@ resolve_app_image_refs() {
     local registry tag
     registry="$(read_env_value IMAGE_REGISTRY)"
     tag="$(read_env_value IMAGE_TAG)"
-    registry="${registry:-registry.cn-shanghai.aliyuncs.com/zhinian-software}"
+    registry="${registry:-ghcr.io/bailuo-xisi}"
     tag="${tag:-latest}"
 
     APP_IMAGE_REFS=()
@@ -667,6 +695,7 @@ run_update() {
     print_banner
     check_docker
     check_deploy_files
+    migrate_legacy_registry
     create_mount_dirs
     cleanup_enc_version
     ensure_infrastructure

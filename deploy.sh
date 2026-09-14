@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-WORK_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORK_DIR="${DEPLOY_WORK_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 COMPOSE_FILE="$WORK_DIR/docker-compose.deploy.yml"
 ENV_FILE="$WORK_DIR/.env"
 
@@ -73,12 +73,12 @@ WEBSOCKET_PORT=8090
 SCHEDULER_PORT=8091
 
 # 镜像配置
-IMAGE_REGISTRY=registry.cn-shanghai.aliyuncs.com/zhinian-software
+IMAGE_REGISTRY=ghcr.io/bailuo-xisi
 IMAGE_TAG=latest
 
-# 基础镜像（MySQL / Redis，从阿里云仓库拉取，由 sync_base_images.sh 同步上传）
-MYSQL_IMAGE=registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-mysql:8.0
-REDIS_IMAGE=registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-redis:7-alpine
+# 基础镜像（Docker Hub 官方镜像）
+MYSQL_IMAGE=mysql:8.0
+REDIS_IMAGE=redis:7-alpine
 
 # 日志级别
 LOG_LEVEL=INFO
@@ -131,6 +131,24 @@ ENVEOF
     echo ""
 fi
 
+migrate_legacy_registry() {
+    local key current replacement
+    for key in IMAGE_REGISTRY MYSQL_IMAGE REDIS_IMAGE; do
+        current="$(grep -E "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d '=' -f2- | tr -d '\r' || true)"
+        replacement=""
+        case "$key" in
+            IMAGE_REGISTRY) replacement="ghcr.io/bailuo-xisi" ;;
+            MYSQL_IMAGE) replacement="mysql:8.0" ;;
+            REDIS_IMAGE) replacement="redis:7-alpine" ;;
+        esac
+        if [[ "$current" == *aliyuncs.com/* ]]; then
+            sed -i -E "s|^${key}=.*$|${key}=${replacement}|" "$ENV_FILE"
+        fi
+    done
+}
+
+migrate_legacy_registry
+
 # ========== 生成 docker-compose.deploy.yml（远程镜像版） ==========
 echo "[信息] 生成 docker-compose.deploy.yml（远程镜像版）..."
 cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
@@ -141,9 +159,9 @@ cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
 services:
   # ====== 基础设施 ======
 
-  # MySQL数据库（默认从阿里云仓库拉取，可通过 MYSQL_IMAGE 覆盖）
+  # MySQL数据库（默认从 Docker Hub 拉取，可通过 MYSQL_IMAGE 覆盖）
   mysql:
-    image: ${MYSQL_IMAGE:-registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-mysql:8.0}
+    image: ${MYSQL_IMAGE:-mysql:8.0}
     container_name: xianyu-mysql
     restart: unless-stopped
     environment:
@@ -170,9 +188,9 @@ services:
       retries: 10
       start_period: 30s
 
-  # Redis缓存（默认从阿里云仓库拉取，可通过 REDIS_IMAGE 覆盖）
+  # Redis缓存（默认从 Docker Hub 拉取，可通过 REDIS_IMAGE 覆盖）
   redis:
-    image: ${REDIS_IMAGE:-registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-redis:7-alpine}
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     container_name: xianyu-redis
     restart: unless-stopped
     command: >
@@ -198,7 +216,7 @@ services:
 
   # Backend-Web 服务
   backend-web:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-backend-web:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-backend-web:${IMAGE_TAG:-latest}
     container_name: xianyu-backend-web
     restart: unless-stopped
     environment:
@@ -260,7 +278,7 @@ services:
 
   # WebSocket 服务
   websocket:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-websocket:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-websocket:${IMAGE_TAG:-latest}
     container_name: xianyu-websocket
     restart: unless-stopped
     environment:
@@ -314,7 +332,7 @@ services:
 
   # Scheduler 服务
   scheduler:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-scheduler:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-scheduler:${IMAGE_TAG:-latest}
     container_name: xianyu-scheduler
     restart: unless-stopped
     environment:
@@ -366,7 +384,7 @@ services:
 
   # 前端服务
   frontend:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-frontend:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-frontend:${IMAGE_TAG:-latest}
     container_name: xianyu-frontend
     restart: unless-stopped
     environment:

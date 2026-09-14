@@ -81,7 +81,7 @@ WEBSOCKET_PORT=8090
 SCHEDULER_PORT=8091
 
 # 镜像配置
-IMAGE_REGISTRY=registry.cn-shanghai.aliyuncs.com/zhinian-software
+IMAGE_REGISTRY=ghcr.io/bailuo-xisi
 IMAGE_TAG=latest
 
 # 日志级别
@@ -136,6 +136,11 @@ ENVEOF
     exit 0
 fi
 
+legacy_registry="$(grep -E '^IMAGE_REGISTRY=' "$ENV_FILE" | tail -n 1 | cut -d '=' -f2- | tr -d '\r' || true)"
+if [[ "$legacy_registry" == *aliyuncs.com/* ]]; then
+    sed -i -E 's|^IMAGE_REGISTRY=.*$|IMAGE_REGISTRY=ghcr.io/bailuo-xisi|' "$ENV_FILE"
+fi
+
 # ========== 生成 docker-compose.remote.yml（远程镜像 + 远程 MySQL/Redis） ==========
 echo "[信息] 生成 docker-compose.remote.yml..."
 cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
@@ -148,7 +153,7 @@ services:
 
   # Backend-Web 服务
   backend-web:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-backend-web:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-backend-web:${IMAGE_TAG:-latest}
     container_name: xianyu-backend-web
     restart: unless-stopped
     environment:
@@ -205,7 +210,7 @@ services:
 
   # WebSocket 服务
   websocket:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-websocket:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-websocket:${IMAGE_TAG:-latest}
     container_name: xianyu-websocket
     restart: unless-stopped
     environment:
@@ -255,7 +260,7 @@ services:
 
   # Scheduler 服务
   scheduler:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-scheduler:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-scheduler:${IMAGE_TAG:-latest}
     container_name: xianyu-scheduler
     restart: unless-stopped
     environment:
@@ -303,7 +308,7 @@ services:
 
   # 前端服务
   frontend:
-    image: ${IMAGE_REGISTRY:-registry.cn-shanghai.aliyuncs.com/zhinian-software}/xianyu-frontend:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/bailuo-xisi}/xianyu-frontend:${IMAGE_TAG:-latest}
     container_name: xianyu-frontend
     restart: unless-stopped
     environment:

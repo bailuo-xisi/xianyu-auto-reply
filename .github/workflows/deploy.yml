@@ -12,10 +12,11 @@ concurrency:
 
 permissions:
   contents: read
+  packages: write
 
 env:
-  REGISTRY: ${{ vars.IMAGE_REGISTRY || 'registry.cn-shanghai.aliyuncs.com' }}
-  IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE || 'zhinian-software' }}
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
@@ -73,12 +74,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to image registry
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -107,8 +108,8 @@ jobs:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/xianyu-auto-reply' }}
       DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+      GHCR_USERNAME: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -131,25 +132,62 @@ jobs:
           fi
           chmod 600 "$HOME/.ssh/known_hosts"
 
-      - name: Upload deployment helper
+      - name: Log in to GitHub Container Registry on server
         shell: bash
         run: |
           set -euo pipefail
           SSH_OPTS=(-p "$DEPLOY_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes)
-          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH/.deploy'"
-          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "cat > '$DEPLOY_PATH/.deploy/deploy_zero_downtime.sh' && chmod 700 '$DEPLOY_PATH/.deploy/deploy_zero_downtime.sh'" < scripts/deploy_zero_downtime.sh
+          printf '%s' "$GHCR_TOKEN" | ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "docker login '$REGISTRY' --username '$GHCR_USERNAME' --password-stdin"
 
-      - name: Log in to registry on server
-        if: ${{ env.REGISTRY_USERNAME != '' && env.REGISTRY_PASSWORD != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          SSH_OPTS=(-p "$DEPLOY_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes)
-          printf '%s' "$REGISTRY_PASSWORD" | ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "docker login '$REGISTRY' --username '$REGISTRY_USERNAME' --password-stdin"
-
-      - name: Deploy one service at a time
+      - name: Sync repository and restart services
         shell: bash
         run: |
           set -euo pipefail
           SSH_OPTS=(-p "$DEPLOY_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
-          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "IMAGE_REGISTRY='$REGISTRY/$IMAGE_NAMESPACE' IMAGE_TAG='$IMAGE_TAG' DEPLOY_DIR='$DEPLOY_PATH' bash '$DEPLOY_PATH/.deploy/deploy_zero_downtime.sh'"
+          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_REGISTRY='$REGISTRY/$IMAGE_NAMESPACE' IMAGE_TAG=latest bash -s" <<'REMOTE_SCRIPT'
+          set -Eeuo pipefail
+          cd "$DEPLOY_PATH"
+
+          git fetch origin main
+          git reset --hard origin/main
+
+          if [ -f .env ]; then
+            sed -i -E "s|^IMAGE_REGISTRY=.*$|IMAGE_REGISTRY=${IMAGE_REGISTRY}|" .env || true
+            sed -i -E "s|^IMAGE_TAG=.*$|IMAGE_TAG=${IMAGE_TAG}|" .env || true
+            sed -i -E 's|^MYSQL_IMAGE=.*aliyuncs.com/.*$|MYSQL_IMAGE=mysql:8.0|' .env || true
+            sed -i -E 's|^REDIS_IMAGE=.*aliyuncs.com/.*$|REDIS_IMAGE=redis:7-alpine|' .env || true
+          fi
+
+          if [ -f docker-compose.deploy.yml ]; then
+            COMPOSE_FILE=docker-compose.deploy.yml
+          elif [ -f docker-compose.remote.yml ]; then
+            COMPOSE_FILE=docker-compose.remote.yml
+          else
+            COMPOSE_FILE=docker-compose.yml
+          fi
+
+          if [ -f .env ]; then
+            ENV_ARGS=(--env-file .env)
+          elif [ -f .env.remote ]; then
+            ENV_ARGS=(--env-file .env.remote)
+          else
+            ENV_ARGS=()
+          fi
+
+          if docker compose version >/dev/null 2>&1; then
+            DC=(docker compose)
+          else
+            DC=(docker-compose)
+          fi
+
+          if grep -qE '^[[:space:]]+build:' "$COMPOSE_FILE"; then
+            "${DC[@]}" -f "$COMPOSE_FILE" "${ENV_ARGS[@]}" up -d --build --remove-orphans
+          else
+            IMAGE_REGISTRY="$IMAGE_REGISTRY" IMAGE_TAG="$IMAGE_TAG" MYSQL_IMAGE=mysql:8.0 REDIS_IMAGE=redis:7-alpine \
+              "${DC[@]}" -f "$COMPOSE_FILE" "${ENV_ARGS[@]}" pull
+            IMAGE_REGISTRY="$IMAGE_REGISTRY" IMAGE_TAG="$IMAGE_TAG" MYSQL_IMAGE=mysql:8.0 REDIS_IMAGE=redis:7-alpine \
+              "${DC[@]}" -f "$COMPOSE_FILE" "${ENV_ARGS[@]}" up -d --remove-orphans
+          fi
+
+          docker image prune -f
+          REMOTE_SCRIPT
